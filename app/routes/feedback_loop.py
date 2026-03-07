@@ -63,10 +63,12 @@ def submit_feedback(
             rating=feedback.rating,
             focus_concept=feedback.focus_concept,
             adaptation_made=adaptation is not None,
-            adaptation_details=adaptation.dict() if adaptation else None,
+            adaptation_details=adaptation.model_dump() if adaptation else None,
             submitted_at=feedback_record.created_at
         )
 
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         print(f"[ERROR] submit_feedback: {str(e)} | student_id={feedback.student_id}")
         raise HTTPException(status_code=500, detail="Error submitting feedback")

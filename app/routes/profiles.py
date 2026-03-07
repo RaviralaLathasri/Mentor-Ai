@@ -12,7 +12,6 @@ Allows students to:
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from typing import Optional
 from datetime import datetime
 
 from app.database import get_db, Student
@@ -22,6 +21,14 @@ from app.schemas import (
 from app.services import StudentProfileService
 
 router = APIRouter(prefix="/api/profile", tags=["Profile Management"])
+
+
+def _to_profile_response(profile) -> ProfileResponse:
+    data = ProfileResponse.model_validate(profile).model_dump()
+    if getattr(profile, "student", None):
+        data["student_name"] = profile.student.name
+        data["student_email"] = profile.student.email
+    return ProfileResponse(**data)
 
 
 @router.post("/create", response_model=StudentResponse)
@@ -82,7 +89,7 @@ def create_profile(
             confidence_level=profile_data.confidence_level,
             preferred_difficulty=profile_data.preferred_difficulty
         )
-        return ProfileResponse.model_validate(updated)
+        return _to_profile_response(updated)
     else:
         # Create new
         profile = service.create_profile(
@@ -93,7 +100,7 @@ def create_profile(
             confidence_level=profile_data.confidence_level,
             preferred_difficulty=profile_data.preferred_difficulty
         )
-        return ProfileResponse.model_validate(profile)
+        return _to_profile_response(profile)
 
 
 @router.get("/{student_id}", response_model=ProfileResponse)
@@ -108,7 +115,7 @@ def get_profile(
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
 
-    return ProfileResponse.model_validate(profile)
+    return _to_profile_response(profile)
 
 
 @router.put("/{student_id}", response_model=ProfileResponse)
@@ -129,4 +136,15 @@ def update_profile(
         preferred_difficulty=profile_data.preferred_difficulty
     )
 
-    return ProfileResponse.model_validate(profile)
+    return _to_profile_response(profile)
+
+
+@router.get("/student/{student_id}", response_model=StudentResponse)
+def get_student(
+    student_id: int,
+    db: Session = Depends(get_db)
+):
+    student = db.query(Student).filter(Student.id == student_id).first()
+    if not student:
+        raise HTTPException(status_code=404, detail="Student not found")
+    return StudentResponse.model_validate(student)

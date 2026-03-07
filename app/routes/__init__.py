@@ -23,6 +23,7 @@ from . import mentor_ai
 from . import feedback_loop
 from . import adaptive
 from . import explain_mistakes
+from . import analytics
 
 __all__ = [
     "profiles",
@@ -30,5 +31,6 @@ __all__ = [
     "mentor_ai",
     "feedback_loop",
     "adaptive",
-    "explain_mistakes"
+    "explain_mistakes",
+    "analytics",
 ]

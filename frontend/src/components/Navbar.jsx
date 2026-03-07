@@ -1,34 +1,33 @@
-import { Link, useLocation } from 'react-router-dom';
-import './Navbar.css';
+import { NavLink } from "react-router-dom";
 
-const Navbar = () => {
-  const location = useLocation();
+const navItems = [
+  { to: "/dashboard", label: "Dashboard" },
+  { to: "/chat", label: "Mentor Chat" },
+  { to: "/profile", label: "Profile" },
+  { to: "/weakness", label: "Weakness" },
+  { to: "/explain", label: "Explain Mistake" },
+  { to: "/analytics", label: "Analytics" },
+];
 
-  const isActive = (path) => {
-    return location.pathname === path ? 'active' : '';
-  };
-
+export default function Navbar() {
   return (
-    <nav className="navbar">
-      <div className="nav-container">
-        <Link to="/" className="nav-logo">
-          🧠 Mentor AI
-        </Link>
-
-        <div className="nav-menu">
-          <Link to="/profile" className={`nav-link ${isActive('/profile')}`}>
-            Profile
-          </Link>
-          <Link to="/dashboard" className={`nav-link ${isActive('/dashboard')}`}>
-            Dashboard
-          </Link>
-          <Link to="/chat" className={`nav-link ${isActive('/chat')}`}>
-            Chat
-          </Link>
-        </div>
+    <header className="topbar">
+      <div className="topbar-inner">
+        <NavLink to="/" className="brand">
+          Mentor AI
+        </NavLink>
+        <nav className="nav-links" aria-label="Primary">
+          {navItems.map((item) => (
+            <NavLink
+              key={item.to}
+              to={item.to}
+              className={({ isActive }) => `nav-link ${isActive ? "active" : ""}`}
+            >
+              {item.label}
+            </NavLink>
+          ))}
+        </nav>
       </div>
-    </nav>
+    </header>
   );
-};
-
-export default Navbar;
+}

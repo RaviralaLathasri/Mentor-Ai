@@ -1,115 +1,81 @@
-import axios from 'axios';
+import axios from "axios";
 
-// Create axios instance with base configuration
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+
 const api = axios.create({
-  baseURL: 'http://localhost:8001',
+  baseURL: API_BASE_URL,
+  timeout: 20000,
   headers: {
-    'Content-Type': 'application/json',
+    "Content-Type": "application/json",
   },
 });
 
-// Request interceptor for adding auth headers if needed
-api.interceptors.request.use(
-  (config) => {
-    // Add auth token if available
-    const token = localStorage.getItem('authToken');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
-  (error) => {
-    return Promise.reject(error);
+function parseError(error) {
+  if (error?.response?.data?.detail) {
+    return error.response.data.detail;
   }
-);
-
-// Response interceptor for handling errors
-api.interceptors.response.use(
-  (response) => {
-    return response;
-  },
-  (error) => {
-    if (error.response?.status === 401) {
-      // Handle unauthorized access
-      localStorage.removeItem('authToken');
-      window.location.href = '/login';
-    }
-    return Promise.reject(error);
+  if (typeof error?.response?.data === "string") {
+    return error.response.data;
   }
-);
+  return error?.message || "Request failed";
+}
 
-// API endpoints
-export const profileAPI = {
-  // Create student profile
-  createProfile: async (profileData) => {
-    try {
-      const response = await api.post('/api/profile/create', profileData);
-      return response.data;
-    } catch (error) {
-      throw error.response?.data || error.message;
-    }
-  },
+async function request(promise) {
+  try {
+    const response = await promise;
+    return response.data;
+  } catch (error) {
+    throw new Error(parseError(error));
+  }
+}
 
-  // Get student profile
-  getProfile: async (studentId) => {
-    try {
-      const response = await api.get(`/api/profile/${studentId}`);
-      return response.data;
-    } catch (error) {
-      throw error.response?.data || error.message;
-    }
-  },
-
-  // Update student profile
-  updateProfile: async (studentId, profileData) => {
-    try {
-      const response = await api.put(`/api/profile/${studentId}`, profileData);
-      return response.data;
-    } catch (error) {
-      throw error.response?.data || error.message;
-    }
-  },
+export const profileApi = {
+  createStudent: (payload) => request(api.post("/api/profile/create", payload)),
+  getStudent: (studentId) => request(api.get(`/api/profile/student/${studentId}`)),
+  getProfile: (studentId) => request(api.get(`/api/profile/${studentId}`)),
+  updateProfile: (studentId, payload) => request(api.put(`/api/profile/${studentId}`, payload)),
+  upsertProfile: (studentId, payload) => request(api.post(`/api/profile/${studentId}/profile`, payload)),
 };
 
-export const chatAPI = {
-  // Send chat message (uses mentor API)
-  sendMessage: async (messageData) => {
-    try {
-      const response = await api.post('/api/mentor/respond', {
-        student_id: messageData.student_id,
-        query: messageData.message,
-        focus_concept: messageData.focus_concept || null,
-        context: messageData.context || null
-      });
-      return response.data;
-    } catch (error) {
-      throw error.response?.data || error.message;
-    }
-  },
+export const mentorApi = {
+  respond: (payload) => request(api.post("/api/mentor/respond", payload)),
 };
 
-export const wellnessAPI = {
-  // Get wellness data
-  getWellness: async (studentId) => {
-    try {
-      const response = await api.get(`/api/wellness/${studentId}`);
-      return response.data;
-    } catch (error) {
-      throw error.response?.data || error.message;
-    }
-  },
+export const feedbackApi = {
+  submit: (payload) => request(api.post("/api/feedback/submit", payload)),
+  rate: (payload) =>
+    request(
+      api.post("/api/feedback/rate-response", null, {
+        params: payload,
+      }),
+    ),
 };
 
-export const mentorAPI = {
-  // Get mentor response
-  getMentorResponse: async (queryData) => {
-    try {
-      const response = await api.post('/api/mentor', queryData);
-      return response.data;
-    } catch (error) {
-      throw error.response?.data || error.message;
-    }
-  },
+export const wellnessApi = {
+  submitQuiz: (payload) => request(api.post("/api/analyze/quiz", payload)),
+  getWeakestConcepts: (studentId, limit = 8) =>
+    request(api.get(`/api/analyze/weakest-concepts/${studentId}`, { params: { limit } })),
+};
+
+export const explainApi = {
+  explainMistake: (payload) => request(api.post("/api/explain/mistake", payload)),
+};
+
+export const adaptiveApi = {
+  createSession: (payload) => request(api.post("/api/adaptive/session", payload)),
+  getStatus: (studentId) => request(api.get(`/api/adaptive/status/${studentId}`)),
+  getRecommendations: (studentId) => request(api.get(`/api/adaptive/recommendations/${studentId}`)),
+};
+
+export const analyticsApi = {
+  getDashboard: (studentId) => request(api.get(`/api/analytics/dashboard/${studentId}`)),
+  getFeedbackDistribution: (studentId) => request(api.get(`/api/analytics/feedback-distribution/${studentId}`)),
+  getPerformanceOverTime: (studentId) => request(api.get(`/api/analytics/performance-over-time/${studentId}`)),
+  getWeakestConcepts: (studentId, limit = 8) =>
+    request(api.get(`/api/analytics/weakest-concepts/${studentId}`, { params: { limit } })),
+  getWeaknessGraph: (studentId, limit = 8) =>
+    request(api.get(`/api/analytics/weakest-concepts-graph/${studentId}`, { params: { limit } })),
+  getSummary: (studentId) => request(api.get(`/api/analytics/summary/${studentId}`)),
 };
 
 export default api;

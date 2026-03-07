@@ -50,31 +50,16 @@ def explain_mistake(
     """
     try:
         service = WeaknessAnalyzerService(db)
-
-        # Detect misconception
-        misconception = service._detect_misconception(
-            request.student_answer,
-            request.correct_answer,
-            request.concept
-        )
-
-        # Create explanation
-        explanation = MistakeExplanation(
+        return service.explain_mistake(
             student_id=request.student_id,
             concept=request.concept,
-            misconception_identified=misconception,
-            why_wrong=f"In your answer '{request.student_answer}', you assumed...",
-            correct_explanation=f"The correct answer '{request.correct_answer}' because...",
-            learning_tips=[
-                "Focus on the core principle",
-                "Practice similar problems",
-                "Review prerequisite concepts"
-            ],
-            related_concept="foundation_concept"
+            student_answer=request.student_answer,
+            correct_answer=request.correct_answer,
+            question=request.question
         )
 
-        return explanation
-
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         print(f"[ERROR] explain_mistake: {str(e)} | student_id={request.student_id}")
         raise HTTPException(status_code=500, detail="Error explaining mistake")

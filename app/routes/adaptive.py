@@ -35,21 +35,12 @@ def create_session(
     """
     try:
         service = AdaptiveLearningService(db)
-
-        # Get current student context
-        context = service.get_student_context_snapshot(session_data.student_id)
-
-        # TODO: Create session record in database
-        response = SessionResponse(
-            session_id="session_" + __import__('uuid').uuid4().hex[:8],
+        session = service.create_session(
             student_id=session_data.student_id,
             topic=session_data.topic,
-            difficulty=session_data.difficulty,
-            started_at=__import__('datetime').datetime.utcnow(),
-            context_snapshot=context
+            difficulty_level=session_data.difficulty_level
         )
-
-        return response
+        return SessionResponse.model_validate(session)
 
     except ValueError as e:
         print(f"[ERROR] create_session: {str(e)} | student_id={session_data.student_id}")
@@ -80,6 +71,8 @@ def get_adaptive_status(
 
         return context
 
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         print(f"[ERROR] get_adaptive_status: {str(e)} | student_id={student_id}")
         raise HTTPException(status_code=500, detail="Error retrieving adaptive status")
@@ -102,42 +95,16 @@ def get_learning_recommendations(
     try:
         service = AdaptiveLearningService(db)
         context = service.get_student_context_snapshot(student_id)
-
-        recommendations = []
-
-        # Recommend weakest concept
-        if context.primary_weakness_concepts:
-            recommendations.append({
-                "priority": "high",
-                "type": "focus_concept",
-                "concept": context.primary_weakness_concepts[0],
-                "reason": "This is your weakest concept right now. Focus here to improve."
-            })
-
-        # Recommend confidence building if low
-        if context.confidence_level < 0.5:
-            recommendations.append({
-                "priority": "medium",
-                "type": "confidence_boost",
-                "concept": context.strength_areas[0] if context.strength_areas else "general",
-                "reason": "Let's build your confidence with familiar topics before challenging yourself."
-            })
-
-        # Recommend difficulty adjustment if sentiment negative
-        if context.recent_feedback_sentiment == "negative":
-            recommendations.append({
-                "priority": "high",
-                "type": "difficulty_adjustment",
-                "suggestion": "decrease",
-                "reason": "Recent feedback suggests the content is too challenging. Let's dial it back."
-            })
+        recommendations = service.generate_recommendations(student_id)
 
         return {
             "student_id": student_id,
-            "context": context,
+            "context": context.model_dump(),
             "recommendations": recommendations
         }
 
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         print(f"[ERROR] get_learning_recommendations: {str(e)} | student_id={student_id}")
         raise HTTPException(status_code=500, detail="Error generating recommendations")

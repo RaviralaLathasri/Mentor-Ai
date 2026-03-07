@@ -47,6 +47,8 @@ def analyze_quiz_result(
 
         return result
 
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         print(f"[ERROR] analyze_quiz_result: {str(e)} | student_id={answer.student_id}")
         raise HTTPException(status_code=500, detail="Error analyzing quiz result")

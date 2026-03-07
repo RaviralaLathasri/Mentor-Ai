@@ -1,214 +1,161 @@
-import { useState, useEffect, useRef } from 'react';
-import { chatAPI } from '../services/api';
-import Alert from '../components/Alert';
-import LoadingSpinner from '../components/LoadingSpinner';
-import './Chat.css';
+import { useEffect, useMemo, useRef, useState } from "react";
 
-const Chat = () => {
+import FeedbackButtons from "../components/FeedbackButtons";
+import Notice from "../components/Notice";
+import PageShell from "../components/PageShell";
+import StudentBanner from "../components/StudentBanner";
+import useStudentId from "../hooks/useStudentId";
+import { feedbackApi, mentorApi } from "../services/api";
+
+export default function Chat() {
+  const [studentId, setStudentId] = useStudentId();
   const [messages, setMessages] = useState([]);
-  const [inputMessage, setInputMessage] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [alert, setAlert] = useState(null);
-  const messagesEndRef = useRef(null);
-
-  const studentId = localStorage.getItem('studentId');
+  const [query, setQuery] = useState("");
+  const [sending, setSending] = useState(false);
+  const [notice, setNotice] = useState({ type: "info", message: "" });
+  const endRef = useRef(null);
 
   useEffect(() => {
     if (!studentId) {
-      setAlert({
-        type: 'error',
-        message: 'Please create your profile first to start chatting.'
-      });
-    } else {
-      // Add welcome message
-      setMessages([{
-        id: 1,
-        type: 'ai',
-        content: 'Hello! I\'m your AI Mentor. Ask me anything about your learning journey, and I\'ll help you understand concepts, solve problems, and guide your progress.',
-        timestamp: new Date()
-      }]);
-    }
-  }, [studentId]);
-
-  useEffect(() => {
-    scrollToBottom();
-  }, [messages]);
-
-  const scrollToBottom = () => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  };
-
-  const showAlert = (type, message) => {
-    setAlert({ type, message });
-    setTimeout(() => setAlert(null), 5000);
-  };
-
-  const handleSendMessage = async (e) => {
-    e.preventDefault();
-
-    if (!inputMessage.trim()) return;
-    if (!studentId) {
-      showAlert('error', 'Please create your profile first.');
+      setMessages([]);
       return;
     }
 
-    const userMessage = {
-      id: Date.now(),
-      type: 'user',
-      content: inputMessage.trim(),
-      timestamp: new Date()
-    };
+    setMessages([
+      {
+        id: `welcome-${studentId}`,
+        role: "assistant",
+        text: "Start with a concept question. I will guide using Socratic prompts.",
+      },
+    ]);
+  }, [studentId]);
 
-    setMessages(prev => [...prev, userMessage]);
-    setInputMessage('');
-    setLoading(true);
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const canSend = useMemo(() => Boolean(studentId && query.trim() && !sending), [studentId, query, sending]);
+
+  const clearStudent = () => {
+    setStudentId(null);
+    setNotice({ type: "info", message: "Student context cleared." });
+  };
+
+  const sendMessage = async (event) => {
+    event.preventDefault();
+    if (!canSend) return;
+
+    const text = query.trim();
+    setQuery("");
+
+    setMessages((previous) => [...previous, { id: `u-${Date.now()}`, role: "user", text }]);
+    setSending(true);
 
     try {
-      const response = await chatAPI.sendMessage({
-        student_id: parseInt(studentId),
-        message: userMessage.content
+      const response = await mentorApi.respond({
+        student_id: studentId,
+        query: text,
       });
 
-      // Improved error handling for response structure
-      if (!response || !response.response) {
-        throw new Error('Invalid response from mentor service');
-      }
-
-      const aiMessage = {
-        id: Date.now() + 1,
-        type: 'ai',
-        content: response.response,
-        timestamp: new Date(),
-        metadata: {
+      setMessages((previous) => [
+        ...previous,
+        {
+          id: `a-${response.response_id}`,
+          role: "assistant",
+          text: response.response,
+          responseId: response.response_id,
           concept: response.target_concept,
           style: response.explanation_style,
-          followUp: response.follow_up_question
-        }
-      };
-
-      setMessages(prev => [...prev, aiMessage]);
-      showAlert('success', 'Mentor responded successfully!');
+          followUp: response.follow_up_question,
+          feedback: "",
+        },
+      ]);
+      setNotice({ type: "success", message: "Mentor response generated." });
     } catch (error) {
-      console.error('Error sending message:', error);
-      
-      // Improved error message
-      let errorMsg = 'Failed to send message. Please try again.';
-      if (error.response?.status === 404) {
-        errorMsg = 'Student profile not found. Please update your profile.';
-      } else if (error.response?.status === 422) {
-        errorMsg = 'Invalid student ID. Please create a new profile.';
-      } else if (error.message === 'Invalid response from mentor service') {
-        errorMsg = 'Mentor service returned invalid response. Please try again.';
-      }
-      
-      showAlert('error', errorMsg);
-
-      // Add error message to chat
-      const errorMessage = {
-        id: Date.now() + 1,
-        type: 'ai',
-        content: `Sorry, I encountered an error: ${errorMsg}`,
-        timestamp: new Date()
-      };
-      setMessages(prev => [...prev, errorMessage]);
+      setNotice({ type: "error", message: error.message });
     } finally {
-      setLoading(false);
+      setSending(false);
     }
   };
 
-  const formatTime = (timestamp) => {
-    return new Date(timestamp).toLocaleTimeString([], {
-      hour: '2-digit',
-      minute: '2-digit'
-    });
+  const submitFeedback = async (messageIndex, feedbackType) => {
+    const message = messages[messageIndex];
+    if (!message?.responseId || !studentId) return;
+
+    try {
+      await feedbackApi.submit({
+        student_id: studentId,
+        response_id: message.responseId,
+        feedback_type: feedbackType,
+        focus_concept: message.concept,
+      });
+
+      setMessages((previous) => {
+        const copy = [...previous];
+        copy[messageIndex] = { ...copy[messageIndex], feedback: feedbackType };
+        return copy;
+      });
+      setNotice({ type: "success", message: `Feedback recorded as ${feedbackType}.` });
+    } catch (error) {
+      setNotice({ type: "error", message: error.message });
+    }
   };
 
-  if (!studentId) {
-    return (
-      <div className="chat-page">
-        <div className="container">
-          <Alert
-            type={alert?.type}
-            message={alert?.message}
-          />
-          <div className="card">
-            <div className="card-header">
-              <h1 className="card-title">AI Chat</h1>
-            </div>
-            <p>Please create your profile first to start chatting with the AI mentor.</p>
-            <a href="/profile" className="btn btn-primary">Create Profile</a>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="chat-page">
-      <div className="container">
-        <div className="chat-container">
-          <div className="chat-header">
-            <h1>🤖 AI Mentor Chat</h1>
-            <p>Ask me anything about your learning journey</p>
-          </div>
+    <PageShell title="Mentor Chat Interface" subtitle="Ask questions and provide immediate feedback.">
+      <StudentBanner studentId={studentId} onClear={clearStudent} />
+      <Notice type={notice.type} message={notice.message} />
 
-          <Alert
-            type={alert?.type}
-            message={alert?.message}
-            onClose={() => setAlert(null)}
-          />
-
-          <div className="chat-messages">
-            {messages.map((message) => (
-              <div
-                key={message.id}
-                className={`message message-${message.type}`}
-              >
-                <div className="message-content">
-                  {message.content}
-                </div>
-                <div className="message-time">
-                  {formatTime(message.timestamp)}
-                </div>
-              </div>
+      {!studentId ? (
+        <section className="panel">
+          <p>Create or load a student profile first to start the mentor chat.</p>
+        </section>
+      ) : (
+        <>
+          <section className="panel chat-panel">
+            {messages.map((message, index) => (
+              <article key={message.id} className={`chat-bubble ${message.role}`}>
+                <p>{message.text}</p>
+                {message.role === "assistant" && message.followUp ? (
+                  <p className="follow-up">Follow-up: {message.followUp}</p>
+                ) : null}
+                {message.role === "assistant" && message.responseId ? (
+                  <div className="feedback-block">
+                    <FeedbackButtons
+                      selected={message.feedback}
+                      disabled={Boolean(message.feedback)}
+                      onSubmit={(type) => submitFeedback(index, type)}
+                    />
+                    <small>
+                      {message.feedback
+                        ? `Feedback submitted: ${message.feedback}`
+                        : `Style: ${message.style} | Concept: ${message.concept}`}
+                    </small>
+                  </div>
+                ) : null}
+              </article>
             ))}
+            <div ref={endRef} />
+          </section>
 
-            {loading && (
-              <div className="message message-ai">
-                <div className="message-content">
-                  <LoadingSpinner size="small" message="AI is thinking..." />
-                </div>
-              </div>
-            )}
-
-            <div ref={messagesEndRef} />
-          </div>
-
-          <form className="chat-input-container" onSubmit={handleSendMessage}>
-            <input
-              type="text"
-              className="chat-input"
-              placeholder="Ask me anything about your learning..."
-              value={inputMessage}
-              onChange={(e) => setInputMessage(e.target.value)}
-              disabled={loading}
-            />
-            <button
-              type="submit"
-              className="btn btn-primary"
-              disabled={loading || !inputMessage.trim()}
-            >
-              {loading ? (
-                <div className="spinner spinner-small"></div>
-              ) : (
-                'Send'
-              )}
-            </button>
+          <form className="panel chat-input" onSubmit={sendMessage}>
+            <label>
+              Ask Mentor
+              <textarea
+                rows="3"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Example: Why does gradient descent use the negative gradient?"
+              />
+            </label>
+            <div className="button-row">
+              <button type="submit" className="primary-btn" disabled={!canSend}>
+                {sending ? "Thinking..." : "Send"}
+              </button>
+            </div>
           </form>
-        </div>
-      </div>
-    </div>
+        </>
+      )}
+    </PageShell>
   );
-};
-
-export default Chat;
+}

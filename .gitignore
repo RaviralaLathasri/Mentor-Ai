@@ -15,6 +15,7 @@ env/
 
 # Node modules (for React)
 node_modules/
+frontend/dist/
 
 # Logs
 *.log

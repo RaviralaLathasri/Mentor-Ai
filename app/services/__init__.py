@@ -1,55 +1,53 @@
 """
-services/__init__.py
---------------------
-Service layer containing all business logic for the AI Mentor System.
+Service layer for AI Mentor backend.
 
-Services are responsible for:
-- Data access and manipulation
-- Business rule enforcement
-- External integrations (LLM calls, etc.)
-- Complex computations and analysis
-
-Architecture:
-- Each service is a class with dependency injection
-- Services use the database session
-- Services are stateless and testable
-- Routers call services, not database directly
-
-Services:
-1. StudentProfileService - Manage student profiles
-2. WeaknessAnalyzerService - Analyze quiz performance and track weaknesses
-3. MentorAIService - Generate adaptive mentor responses
-4. FeedbackService - Process and store feedback
-5. AdaptiveLearningService - Coordination of adaptive loop
+The routes call these classes for business logic. This file intentionally keeps
+all current service classes in one module to preserve existing imports.
 """
 
-from sqlalchemy.orm import Session
-from sqlalchemy import func, desc
+from __future__ import annotations
+
+import os
+import random
+import uuid
 from datetime import datetime
-from typing import List, Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
+
+from sqlalchemy import desc, func
+from sqlalchemy.orm import Session
+
 from app.database import (
-    Student, StudentProfile, WeaknessScore, Feedback, MentorResponse,
-    AdaptiveSession, DifficultyLevel, FeedbackType
+    AdaptiveSession,
+    DifficultyLevel,
+    Feedback,
+    FeedbackType,
+    MentorResponse,
+    Student,
+    StudentProfile,
+    WeaknessScore,
 )
-from app.schemas import (
-    WeaknessAnalysisResult, MistakeExplanation, AdaptationUpdate,
-    StudentContextSnapshot
-)
+from app.schemas import AdaptationUpdate, MistakeExplanation, StudentContextSnapshot, WeaknessAnalysisResult
+from app.utils.openai_client import get_openai_client
 
 
-# ════════════════════════════════════════════════════════════════════════════════
-# SERVICE 1: StudentProfileService
-# ════════════════════════════════════════════════════════════════════════════════
+def _coerce_difficulty(value: Optional[object], default: DifficultyLevel = DifficultyLevel.MEDIUM) -> DifficultyLevel:
+    if value is None:
+        return default
+    if isinstance(value, DifficultyLevel):
+        return value
+    raw = value.value if hasattr(value, "value") else str(value)
+    return DifficultyLevel(raw)
+
+
+def _coerce_feedback_type(value: object) -> FeedbackType:
+    if isinstance(value, FeedbackType):
+        return value
+    raw = value.value if hasattr(value, "value") else str(value)
+    return FeedbackType(raw)
+
 
 class StudentProfileService:
-    """
-    Manages student profile creation, updates, and retrieval.
-    
-    Enforces business rules:
-    - Only one profile per student
-    - Confidence must be 0.0-1.0
-    - Safe profile updates
-    """
+    """Create/read/update student profiles."""
 
     def __init__(self, db: Session):
         self.db = db
@@ -57,26 +55,20 @@ class StudentProfileService:
     def create_profile(
         self,
         student_id: int,
-        skills: List[str] = None,
-        interests: List[str] = None,
+        skills: Optional[List[str]] = None,
+        interests: Optional[List[str]] = None,
         goals: str = "",
         confidence_level: float = 0.5,
-        preferred_difficulty: str = "medium"
+        preferred_difficulty: object = DifficultyLevel.MEDIUM,
     ) -> StudentProfile:
-        """Create a new student profile."""
-        # Validate student exists
         student = self.db.query(Student).filter(Student.id == student_id).first()
         if not student:
             raise ValueError(f"Student {student_id} not found")
 
-        # Ensure no duplicate profile
-        existing = self.db.query(StudentProfile).filter(
-            StudentProfile.student_id == student_id
-        ).first()
+        existing = self.get_profile(student_id)
         if existing:
             raise ValueError(f"Profile already exists for student {student_id}")
 
-        # Validate confidence
         if not (0.0 <= confidence_level <= 1.0):
             raise ValueError("Confidence must be between 0.0 and 1.0")
 
@@ -84,9 +76,9 @@ class StudentProfileService:
             student_id=student_id,
             skills=skills or [],
             interests=interests or [],
-            goals=goals,
+            goals=goals or "",
             confidence_level=confidence_level,
-            preferred_difficulty=DifficultyLevel(preferred_difficulty)
+            preferred_difficulty=_coerce_difficulty(preferred_difficulty),
         )
         self.db.add(profile)
         self.db.commit()
@@ -94,10 +86,7 @@ class StudentProfileService:
         return profile
 
     def get_profile(self, student_id: int) -> Optional[StudentProfile]:
-        """Get student profile by student ID."""
-        return self.db.query(StudentProfile).filter(
-            StudentProfile.student_id == student_id
-        ).first()
+        return self.db.query(StudentProfile).filter(StudentProfile.student_id == student_id).first()
 
     def update_profile(
         self,
@@ -106,9 +95,8 @@ class StudentProfileService:
         interests: Optional[List[str]] = None,
         goals: Optional[str] = None,
         confidence_level: Optional[float] = None,
-        preferred_difficulty: Optional[str] = None
+        preferred_difficulty: Optional[object] = None,
     ) -> StudentProfile:
-        """Update student profile fields."""
         profile = self.get_profile(student_id)
         if not profile:
             raise ValueError(f"Profile not found for student {student_id}")
@@ -124,7 +112,7 @@ class StudentProfileService:
                 raise ValueError("Confidence must be between 0.0 and 1.0")
             profile.confidence_level = confidence_level
         if preferred_difficulty is not None:
-            profile.preferred_difficulty = DifficultyLevel(preferred_difficulty)
+            profile.preferred_difficulty = _coerce_difficulty(preferred_difficulty)
 
         profile.updated_at = datetime.utcnow()
         self.db.commit()
@@ -132,51 +120,38 @@ class StudentProfileService:
         return profile
 
     def get_learning_context(self, student_id: int) -> Dict:
-        """Get learning context for LLM prompting."""
         profile = self.get_profile(student_id)
         if not profile:
             return {}
-
         return profile.learning_style_summary
 
 
-# ════════════════════════════════════════════════════════════════════════════════
-# SERVICE 2: WeaknessAnalyzerService
-# ════════════════════════════════════════════════════════════════════════════════
-
 class WeaknessAnalyzerService:
-    """
-    Analyzes student quiz performance and tracks concept weaknesses.
-    
-    Weaknesses are used to:
-    - Prioritize topics for future learning
-    - Adjust explanation difficulty
-    - Guide Socratic questioning
-    
-    Weakness score ranges:
-    - 0.0 = strong understanding
-    - 1.0 = very weak/struggling
-    """
+    """Weakness-first analyzer and explain-my-mistake logic."""
 
     def __init__(self, db: Session):
         self.db = db
 
-    def get_or_create_weakness(
-        self,
-        student_id: int,
-        concept_name: str
-    ) -> WeaknessScore:
-        """Get existing weakness score or create new one."""
-        weakness = self.db.query(WeaknessScore).filter(
-            WeaknessScore.student_id == student_id,
-            WeaknessScore.concept_name == concept_name
-        ).first()
+    @staticmethod
+    def _normalize_concept(concept_name: str) -> str:
+        value = (concept_name or "general").strip().lower()
+        return value or "general"
+
+    def get_or_create_weakness(self, student_id: int, concept_name: str) -> WeaknessScore:
+        concept_key = self._normalize_concept(concept_name)
+        weakness = (
+            self.db.query(WeaknessScore)
+            .filter(WeaknessScore.student_id == student_id, WeaknessScore.concept_name == concept_key)
+            .first()
+        )
 
         if not weakness:
             weakness = WeaknessScore(
                 student_id=student_id,
-                concept_name=concept_name,
-                weakness_score=0.0
+                concept_name=concept_key,
+                weakness_score=0.0,
+                times_seen=0,
+                times_correct=0,
             )
             self.db.add(weakness)
             self.db.commit()
@@ -190,95 +165,125 @@ class WeaknessAnalyzerService:
         concept_name: str,
         is_correct: bool,
         student_answer: str = "",
-        correct_answer: str = ""
+        correct_answer: str = "",
     ) -> WeaknessAnalysisResult:
-        """
-        Analyze quiz result and update weakness score.
-        
-        Returns analysis result with learning priority.
-        """
-        weakness = self.get_or_create_weakness(student_id, concept_name)
-        old_weakness = weakness.weakness_score
+        student_exists = self.db.query(Student).filter(Student.id == student_id).first()
+        if not student_exists:
+            raise ValueError(f"Student {student_id} not found")
 
-        # Update weakness
+        weakness = self.get_or_create_weakness(student_id, concept_name)
+        old_score = weakness.weakness_score
+
         weakness.update_from_quiz_result(is_correct)
         self.db.commit()
 
-        # Detect misconception if wrong
         misconception = None
-        if not is_correct and student_answer:
-            misconception = self._detect_misconception(
-                student_answer,
-                correct_answer,
-                concept_name
-            )
-
-        # Determine learning priority
-        priority = self._calculate_learning_priority(weakness.weakness_score)
+        if not is_correct:
+            misconception = self._detect_misconception(student_answer, correct_answer, concept_name)
 
         return WeaknessAnalysisResult(
-            concept_name=concept_name,
+            concept_name=weakness.concept_name,
             is_correct=is_correct,
-            old_weakness_score=round(old_weakness, 3),
+            old_weakness_score=round(old_score, 3),
             new_weakness_score=round(weakness.weakness_score, 3),
             misconception_detected=misconception,
-            learning_priority=priority
+            learning_priority=self._calculate_learning_priority(weakness.weakness_score),
         )
 
-    def get_weakest_concepts(
-        self,
-        student_id: int,
-        limit: int = 5
-    ) -> List[WeaknessScore]:
-        """Get top N weakest concepts for student."""
-        return self.db.query(WeaknessScore).filter(
-            WeaknessScore.student_id == student_id
-        ).order_by(desc(WeaknessScore.weakness_score)).limit(limit).all()
+    def get_weakest_concepts(self, student_id: int, limit: int = 5) -> List[WeaknessScore]:
+        return (
+            self.db.query(WeaknessScore)
+            .filter(WeaknessScore.student_id == student_id)
+            .order_by(desc(WeaknessScore.weakness_score), desc(WeaknessScore.times_seen))
+            .limit(limit)
+            .all()
+        )
 
-    def _detect_misconception(
-        self,
-        student_answer: str,
-        correct_answer: str,
-        concept_name: str
-    ) -> Optional[str]:
-        """
-        Detect misconception from wrong answer.
-        
-        In production, this could call a specialized LLM.
-        For now, returns a simple pattern-based detection.
-        """
-        # Placeholder: in production call LLM to analyze misconception
-        return f"Possible misconception in '{concept_name}'"
+    def get_strength_areas(self, student_id: int, limit: int = 3) -> List[str]:
+        rows = (
+            self.db.query(WeaknessScore)
+            .filter(WeaknessScore.student_id == student_id, WeaknessScore.times_seen >= 2)
+            .order_by(WeaknessScore.weakness_score.asc(), WeaknessScore.times_correct.desc())
+            .limit(limit)
+            .all()
+        )
+        return [item.concept_name for item in rows if item.weakness_score <= 0.35]
+
+    def _detect_misconception(self, student_answer: str, correct_answer: str, concept_name: str) -> Optional[str]:
+        student = (student_answer or "").strip().lower()
+        correct = (correct_answer or "").strip().lower()
+        concept = self._normalize_concept(concept_name)
+
+        if not student:
+            return f"No reasoning provided for {concept}."
+        if student == correct:
+            return None
+        if any(token in student for token in ["always", "never"]):
+            return f"Over-generalization in {concept}."
+        if any(token in student for token in ["random", "guess", "maybe"]):
+            return f"Uncertain causal reasoning in {concept}."
+
+        return f"Core concept mismatch in {concept}."
 
     @staticmethod
     def _calculate_learning_priority(weakness_score: float) -> str:
-        """Calculate learning priority based on weakness score."""
         if weakness_score >= 0.75:
             return "critical"
-        elif weakness_score >= 0.5:
+        if weakness_score >= 0.5:
             return "high"
-        elif weakness_score >= 0.25:
+        if weakness_score >= 0.25:
             return "medium"
-        else:
-            return "low"
+        return "low"
 
+    def explain_mistake(
+        self,
+        student_id: int,
+        concept: str,
+        student_answer: str,
+        correct_answer: str,
+        question: Optional[str] = None,
+    ) -> MistakeExplanation:
+        student_exists = self.db.query(Student).filter(Student.id == student_id).first()
+        if not student_exists:
+            raise ValueError(f"Student {student_id} not found")
 
-# ════════════════════════════════════════════════════════════════════════════════
-# SERVICE 3: MentorAIService
-# ════════════════════════════════════════════════════════════════════════════════
+        concept_key = self._normalize_concept(concept)
+        misconception = self._detect_misconception(student_answer, correct_answer, concept_key) or f"Gap in {concept_key}."
+
+        why_wrong = (
+            f"Your answer focuses on '{student_answer}', but it misses the key idea needed in {concept_key}. "
+            "The response does not align with the underlying principle used to solve this type of problem."
+        )
+        correct_explanation = (
+            f"A stronger answer is '{correct_answer}'. The main idea is to reason from first principles in {concept_key} "
+            "before applying formulas or shortcuts."
+        )
+        guiding_question = self._build_guiding_question(concept_key, question)
+
+        return MistakeExplanation(
+            student_id=student_id,
+            concept=concept_key,
+            misconception_identified=misconception,
+            why_wrong=why_wrong,
+            correct_explanation=correct_explanation,
+            learning_tips=[
+                "Restate the concept in your own words before solving.",
+                "Identify what assumption your answer depends on.",
+                "Test your reasoning on one simpler example first.",
+            ],
+            related_concept="prerequisite foundations",
+            guiding_question=guiding_question,
+        )
+
+    @staticmethod
+    def _build_guiding_question(concept: str, question: Optional[str]) -> str:
+        if question:
+            return f"In '{question}', which step in {concept} determines whether your approach is valid?"
+        return f"What evidence would convince you that your current reasoning in {concept} is correct?"
+
 
 class MentorAIService:
-    """
-    Generates adaptive mentor responses using student context.
-    
-    Considers:
-    - Student confidence level
-    - Concept weakness on target topic
-    - Preferred difficulty level
-    - Recent feedback trends
-    
-    Generates Socratic responses (guiding questions, not direct answers).
-    """
+    """Generate adaptive Socratic mentor responses."""
 
     def __init__(self, db: Session):
         self.db = db
@@ -290,62 +295,38 @@ class MentorAIService:
         student_id: int,
         query: str,
         focus_concept: Optional[str] = None,
-        context: Optional[Dict] = None
+        context: Optional[Dict] = None,
     ) -> Dict:
-        """
-        Generate adaptive mentor response.
-        
-        Process:
-        1. Get student profile and learning context
-        2. Analyze student weaknesses on target concept
-        3. Determine explanation style (simple/conceptual/deep)
-        4. Generate Socratic response
-        5. Generate follow-up guiding question
-        """
-        # Get student context
         profile = self.profile_service.get_profile(student_id)
         if not profile:
             raise ValueError(f"Profile not found for student {student_id}")
 
-        # Determine target concept
         target_concept = focus_concept or self._infer_concept(query)
+        weakness = self.weakness_service.get_or_create_weakness(student_id, target_concept)
 
-        # Get weakness for target concept
-        weakness = self.weakness_service.get_or_create_weakness(
-            student_id,
-            target_concept
-        )
-
-        # Determine explanation style based on student context
+        feedback_bias = self._recent_feedback_bias(student_id)
         explanation_style = self._determine_explanation_style(
             profile.confidence_level,
             weakness.weakness_score,
-            profile.preferred_difficulty
+            profile.preferred_difficulty,
+            feedback_bias,
         )
 
-        # Generate response (in production: call LLM)
         response_text = self._generate_socratic_response(
-            query,
-            target_concept,
-            explanation_style,
-            profile.learning_style_summary
+            query=query,
+            concept=target_concept,
+            style=explanation_style,
+            context=context or profile.learning_style_summary,
         )
+        follow_up = self._generate_guiding_question(target_concept, explanation_style)
 
-        # Generate follow-up guiding question
-        follow_up = self._generate_guiding_question(
-            target_concept,
-            explanation_style
-        )
-
-        # Store response for audit trail
         response_id = self._store_response(
-            student_id,
-            query,
-            response_text,
-            explanation_style,
-            target_concept,
-            weakness.weakness_score,
-            profile.confidence_level
+            student_id=student_id,
+            query=query,
+            response=response_text,
+            style=explanation_style,
+            concept=target_concept,
+            confidence=profile.confidence_level,
         )
 
         return {
@@ -353,408 +334,154 @@ class MentorAIService:
             "response": response_text,
             "explanation_style": explanation_style,
             "target_concept": target_concept,
-            "follow_up_question": follow_up
+            "follow_up_question": follow_up,
         }
+
+    def _recent_feedback_bias(self, student_id: int) -> str:
+        rows = (
+            self.db.query(Feedback.feedback_type)
+            .filter(Feedback.student_id == student_id)
+            .order_by(desc(Feedback.created_at))
+            .limit(5)
+            .all()
+        )
+        if not rows:
+            return "neutral"
+
+        hard_votes = sum(1 for row in rows if row.feedback_type in (FeedbackType.TOO_HARD, FeedbackType.UNCLEAR))
+        easy_votes = sum(1 for row in rows if row.feedback_type == FeedbackType.TOO_EASY)
+
+        if hard_votes > easy_votes:
+            return "simplify"
+        if easy_votes > hard_votes:
+            return "deepen"
+        return "neutral"
 
     @staticmethod
     def _determine_explanation_style(
         confidence: float,
         weakness: float,
-        preferred_difficulty: DifficultyLevel
+        preferred_difficulty: DifficultyLevel,
+        feedback_bias: str,
     ) -> str:
-        """
-        Determine explanation style based on student state.
-        
-        Rules:
-        - High weakness + low confidence → "simple" (very basic)
-        - Medium weakness & confidence → "conceptual" (structured with examples)
-        - Low weakness + high confidence → "deep" (rigorous, mathematical)
-        """
-        if weakness > 0.6 or confidence < 0.3:
+        if feedback_bias == "simplify":
             return "simple"
-        elif 0.3 <= weakness <= 0.6 and 0.3 <= confidence <= 0.7:
-            return "conceptual"
-        else:
+        if feedback_bias == "deepen":
             return "deep"
+
+        if weakness >= 0.6 or confidence <= 0.35:
+            return "simple"
+        if weakness >= 0.3 or preferred_difficulty == DifficultyLevel.MEDIUM:
+            return "conceptual"
+        return "deep"
 
     @staticmethod
     def _infer_concept(query: str) -> str:
-        """
-        Infer concept from student query.
-        
-        Uses keyword extraction to identify likely concepts from the question.
-        In production: use NLP/NER for more sophisticated topic extraction.
-        """
-        query_lower = query.lower()
-        
-        # Comprehensive concept keywords mapping
-        concept_keywords = {
-            'gradient descent': ['gradient', 'descent', 'optimization', 'learning rate', 'backprop'],
-            'machine learning': ['machine learning', 'ml', 'supervised', 'unsupervised', 'classification', 'regression', 'train', 'model'],
-            'neural networks': ['neural', 'network', 'deep learning', 'activation', 'backpropagation', 'layer', 'perceptron'],
-            'data analysis': ['data analysis', 'data analyst', 'analytics', 'analyze data', 'data science', 'data scientist', 'data-driven'],
-            'statistics': ['statistics', 'statistic', 'probability', 'distribution', 'variance', 'mean', 'median', 'standard deviation', 'hypothesis'],
-            'pandas': ['pandas', 'dataframe', 'series', 'groupby', 'merge', 'pivot'],
-            'sql': ['sql', 'query', 'select', 'where', 'join', 'aggregate', 'database'],
-            'python': ['python', 'list', 'dictionary', 'function', 'class', 'module', 'import'],
-            'linear algebra': ['matrix', 'vector', 'linear', 'eigenvalue', 'determinant', 'transpose'],
-            'calculus': ['derivative', 'integral', 'limit', 'function', 'differential', 'chain rule'],
-            'recursion': ['recursion', 'recursive', 'base case', 'stack', 'return'],
-            'algorithm': ['algorithm', 'sorting', 'searching', 'complexity', 'big o', 'time complexity'],
-            'data structure': ['data structure', 'array', 'linked list', 'hash table', 'tree', 'graph', 'queue', 'stack'],
-            'web development': ['html', 'css', 'javascript', 'react', 'api', 'server', 'frontend', 'backend'],
-            'git': ['git', 'commit', 'branch', 'merge', 'repository', 'version control', 'push', 'pull'],
-            'visualization': ['visualization', 'plot', 'chart', 'graph', 'matplotlib', 'seaborn', 'tableau', 'dashboard'],
-            'excel': ['excel', 'spreadsheet', 'pivot table', 'vlookup', 'formulas'],
-            'business analytics': ['business', 'analytics', 'kpi', 'dashboard', 'roi', 'metrics'],
+        query_l = (query or "").lower()
+        keyword_map = {
+            "gradient descent": ["gradient", "descent", "learning rate", "loss"],
+            "backpropagation": ["backprop", "backward", "weights", "neural"],
+            "statistics": ["probability", "variance", "mean", "hypothesis"],
+            "linear algebra": ["matrix", "vector", "eigen", "determinant"],
+            "python": ["python", "list", "dict", "function", "class"],
+            "sql": ["sql", "join", "select", "where", "group by"],
+            "data analysis": ["analysis", "dashboard", "kpi", "data"],
         }
-        
-        # Check which concept has the most keyword matches
-        best_concept = None
-        max_matches = 0
-        
-        for concept, keywords in concept_keywords.items():
-            matches = sum(1 for keyword in keywords if keyword in query_lower)
-            if matches > max_matches:
-                max_matches = matches
-                best_concept = concept
-        
-        return best_concept if max_matches > 0 else 'general'
 
-    @staticmethod
-    def _generate_socratic_response(
-        query: str,
-        concept: str,
-        style: str,
-        context: Dict
-    ) -> str:
-        """
-        Generate Socratic response (guiding questions, not direct answers).
-        
-        Calls LLM with adaptive prompts based on explanation style.
-        """
+        best = "general"
+        best_hits = 0
+        for concept, words in keyword_map.items():
+            hits = sum(1 for word in words if word in query_l)
+            if hits > best_hits:
+                best = concept
+                best_hits = hits
+        return best
+
+    def _generate_socratic_response(self, query: str, concept: str, style: str, context: Dict) -> str:
+        llm_text = self._try_llm_response(query=query, concept=concept, style=style, context=context)
+        if llm_text:
+            return llm_text
+        return self._local_socratic_response(query=query, concept=concept, style=style)
+
+    def _try_llm_response(self, query: str, concept: str, style: str, context: Dict) -> Optional[str]:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            return None
+
+        model = os.getenv("OPENAI_API_MODEL", "gpt-4o-mini")
+        system_prompt = (
+            "You are an AI mentor. Use Socratic questioning, avoid giving direct final answers, "
+            "and adapt depth based on the requested style."
+        )
+        user_prompt = (
+            f"Student query: {query}\n"
+            f"Target concept: {concept}\n"
+            f"Style: {style}\n"
+            f"Student context: {context}\n"
+            "Return a concise mentor response with 2-4 guiding questions."
+        )
+
         try:
-            from openai import OpenAI
-            
-            # Initialize OpenAI client (supports local or OpenRouter)
-            client = OpenAI(
-                api_key="any-key"  # Using local or mock mode
+            client = get_openai_client()
+            completion = client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.4,
+                max_tokens=320,
             )
-            
-            # Craft style-specific system prompt
-            style_guidance = {
-                "simple": "Use very basic language. Break down the concept into small, digestible pieces. Avoid jargon.",
-                "conceptual": "Explain the concept with structured approach. Use examples and analogies. Focus on understanding.",
-                "deep": "Provide rigorous, mathematical explanation. Include derivations and formal definitions."
-            }
-            
-            system_prompt = f"""You are an expert Socratic mentor specializing in {concept}.
-Your role is to guide students through understanding by asking thoughtful questions and providing hints.
-DO NOT give direct answers. Instead, ask guiding questions that help students discover the answer themselves.
+            content = completion.choices[0].message.content if completion.choices else None
+            if content:
+                return content.strip()
+        except Exception:
+            return None
 
-Explanation style: {style}
-{style_guidance.get(style, '')}
+        return None
 
-Student context: {context or 'General learning'}
-
-Respond concisely with 2-3 guiding questions or hints that help the student understand."""
-
-            # Format user message
-            user_message = f"The student asks: '{query}'\n\nHelp them understand '{concept}' through Socratic questioning."
-            
-            # Call LLM (with fallback to mock response)
-            try:
-                response = client.chat.completions.create(
-                    model="gpt-3.5-turbo",
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_message}
-                    ],
-                    temperature=0.7,
-                    max_tokens=300
-                )
-                return response.choices[0].message.content
-            except Exception as e:
-                # Fallback: Return a context-aware response
-                print(f"[WARNING] LLM call failed ({str(e)}), using fallback response")
-                return MentorAIService._generate_fallback_response(query, concept, style)
-                
-        except ImportError:
-            # Fallback if openai not available
-            return MentorAIService._generate_fallback_response(query, concept, style)
-    
     @staticmethod
-    def _generate_fallback_response(query: str, concept: str, style: str) -> str:
-        """
-        Generate a fallback Socratic response when LLM is unavailable.
-        Provides query-specific guidance instead of generic responses.
-        """
-        query_lower = query.lower()
-        
-        # Detect question type from the query
-        is_how_question = any(word in query_lower for word in ['how', 'what is the process', 'steps', 'procedure'])
-        is_why_question = any(word in query_lower for word in ['why', 'reason', 'purpose', 'importance'])
-        is_what_question = any(word in query_lower for word in ['what is', 'definition', 'meaning', 'concept'])
-        is_learn_question = any(word in query_lower for word in ['learn', 'study', 'understand', 'master', 'skill'])
-        is_career_question = any(word in query_lower for word in ['career', 'job', 'profession', 'role', 'analyst'])
-        is_recommend_question = any(word in query_lower for word in ['recommend', 'suggest', 'certificates', 'courses', 'resources', 'best'])
-        
-        # Special handling for direct definition questions
-        if is_what_question and len(query.split()) <= 5 and not any(word in query_lower.split() for word in ['how', 'why', 'learn']):
-            # Provide direct definition for simple "what is" questions
-            definitions = {
-                'machine learning': "Machine learning is a subset of artificial intelligence that enables computers to learn and improve from experience without being explicitly programmed. It uses algorithms to identify patterns in data and make predictions or decisions.",
-                'gradient descent': "Gradient descent is an optimization algorithm used to minimize a function by iteratively moving in the direction of steepest descent, commonly used in machine learning to train models by adjusting parameters.",
-                'neural networks': "Neural networks are computing systems inspired by biological neural networks, consisting of interconnected nodes (neurons) that process and transmit information, used for pattern recognition and machine learning tasks.",
-                'data analysis': "Data analysis is the process of inspecting, cleaning, transforming, and modeling data to discover useful information, draw conclusions, and support decision-making.",
-                'statistics': "Statistics is the study of data collection, analysis, interpretation, and presentation, involving methods for summarizing and drawing inferences from data.",
-                'python': "Python is a high-level programming language known for its simplicity and readability, widely used for data science, web development, automation, and artificial intelligence.",
-                'sql': "SQL (Structured Query Language) is a programming language designed for managing and manipulating relational databases, used for querying, updating, and managing data.",
-                'pandas': "Pandas is a Python library for data manipulation and analysis, providing data structures like DataFrames for working with structured data.",
-                'linear algebra': "Linear algebra is a branch of mathematics dealing with vectors, matrices, and linear transformations, fundamental to many areas including machine learning and computer graphics.",
-                'calculus': "Calculus is a branch of mathematics that studies continuous change, including derivatives (rates of change) and integrals (accumulation), essential for understanding optimization and many algorithms.",
-                'recursion': "Recursion is a programming technique where a function calls itself to solve a problem by breaking it down into smaller, similar subproblems.",
-                'algorithm': "An algorithm is a step-by-step procedure or formula for solving a problem, often used in computer science to process data and perform calculations.",
-                'data structure': "A data structure is a way of organizing and storing data so that it can be accessed and modified efficiently, such as arrays, lists, trees, and graphs.",
-                'web development': "Web development is the process of creating websites and web applications, involving frontend (user interface) and backend (server-side) technologies.",
-                'git': "Git is a distributed version control system that tracks changes in source code during software development, enabling collaboration and version management.",
-                'visualization': "Data visualization is the graphical representation of information and data, using charts, graphs, and other visual elements to communicate insights effectively.",
-                'excel': "Excel is a spreadsheet software developed by Microsoft, used for data analysis, calculations, charting, and database management.",
-                'business analytics': "Business analytics is the practice of using data analysis techniques to understand business performance and make informed decisions."
-            }
-            
-            if concept in definitions:
-                definition = definitions[concept]
-                if style == "simple":
-                    return f"{definition}\n\nCan you think of a real-world example where this concept is used?"
-                elif style == "conceptual":
-                    return f"{definition}\n\nHow does this concept relate to problems you've encountered?"
-                else:  # deep
-                    return f"{definition}\n\nWhat mathematical principles underlie this concept?"
-            else:
-                # Generic definition for unknown concepts
-                return f"'{concept}' refers to a specific area of knowledge or technique. To understand it better: What context or field is this concept from? What do you already know about related topics?"
-        
-        # Special handling for recommendation questions
-        if is_recommend_question:
-            if 'certificate' in query_lower or 'certification' in query_lower:
-                if concept == 'machine learning' or concept == 'general':
-                    return """Here are some highly recommended certifications for machine learning:
-
-**Beginner to Intermediate:**
-- Google Data Analytics Professional Certificate (Coursera)
-- IBM Data Science Professional Certificate (Coursera)
-- Microsoft Certified: Azure AI Fundamentals
-- AWS Certified Machine Learning - Specialty
-
-**Advanced:**
-- TensorFlow Developer Certificate (Google)
-- Certified Machine Learning Engineer (SAS)
-- Deep Learning Specialization (Coursera/Andrew Ng)
-
-**Comprehensive Programs:**
-- Machine Learning Engineer Nanodegree (Udacity)
-- AI Product Manager Certification (Duke University/Coursera)
-
-Start with Google's Data Analytics certificate if you're new to the field. Which level interests you most?"""
-                elif concept == 'data analysis':
-                    return """Recommended certifications for data analysis:
-
-**Entry Level:**
-- Google Data Analytics Professional Certificate (Coursera) - Most popular
-- IBM Data Analyst Professional Certificate (Coursera)
-- Microsoft Certified: Power BI Data Analyst Associate
-
-**Intermediate:**
-- SAS Certified Data Scientist
-- Cloudera Certified Associate (CCA) Data Analyst
-- Oracle Business Intelligence Certification
-
-**Advanced:**
-- Certified Analytics Professional (CAP)
-- INFORMS Certified Analytics Professional
-
-The Google certificate is excellent for beginners and highly recognized by employers. What specific tools are you most interested in learning?"""
-                else:
-                    return f"For '{concept}' certifications, I recommend checking platforms like Coursera, edX, and LinkedIn Learning. Look for industry-recognized credentials from Google, IBM, or Microsoft. What specific skills are you looking to certify?"
-            
-            elif 'course' in query_lower:
-                return f"""For learning '{concept}', here are excellent course recommendations:
-
-**Online Platforms:**
-- Coursera: Specializations from top universities
-- edX: University-level courses from MIT, Harvard, etc.
-- Udacity: Practical, career-focused nanodegrees
-- DataCamp: Interactive coding courses
-- LinkedIn Learning: Professional skill development
-
-**Free Resources:**
-- Khan Academy: Foundational concepts
-- freeCodeCamp: Practical projects
-- YouTube channels: 3Blue1Brown (math), StatQuest (statistics)
-
-What learning style works best for you - video lectures, hands-on projects, or reading?"""
-            
-            else:
-                return f"""For '{concept}' recommendations, consider:
-
-**Learning Resources:**
-- Online courses on Coursera/edX
-- Books by domain experts
-- YouTube tutorials and explanations
-- Practice platforms like Kaggle, LeetCode
-
-**Tools & Technologies:**
-- Start with free/open-source options
-- Build practical projects
-- Join communities (Stack Overflow, Reddit)
-
-What type of recommendation are you looking for - courses, books, tools, or career advice?"""
-        
-        # Generate query-specific responses based on style and question type
-        if is_learn_question or is_career_question:
-            # For "how to learn X" or career-related questions - provide PRACTICAL guidance
-            if style == "simple":
-                return f"""Here's a practical roadmap to learn '{concept}':
-1. **Start with basics**: Learn the fundamental concepts and terminology
-2. **Hands-on practice**: Work on small projects using real data
-3. **Build skills progressively**: Master one tool/technology at a time
-4. **Apply what you learn**: Use '{concept}' to solve real problems
-5. **Get feedback**: Share your work and learn from others
-
-What specific aspect of '{concept}' interests you most?"""
-            elif style == "conceptual":
-                return f"""To become proficient in '{concept}', focus on these key areas:
-- **Core skills**: Master the essential tools and techniques
-- **Data handling**: Learn how to collect, clean, and prepare data
-- **Analysis methods**: Understand different approaches and when to use them
-- **Visualization**: Communicate insights effectively through charts and dashboards
-- **Business context**: Understand how '{concept}' drives decision-making
-
-Consider starting with online courses on platforms like Coursera, edX, or Udacity. What experience level are you at currently?"""
-            else:  # deep
-                return f"""For comprehensive mastery of '{concept}', develop expertise across:
-- **Technical foundation**: Advanced statistics, programming, and algorithms
-- **Domain knowledge**: Industry-specific applications and best practices
-- **Tools and technologies**: Latest frameworks, cloud platforms, and automation
-- **Soft skills**: Problem-solving, communication, and project management
-- **Continuous learning**: Stay updated with emerging trends and research
-
-Recommended path: Start with structured learning (certifications), then build portfolio projects, contribute to open-source, and network with professionals. What are your long-term career goals in this field?"""
-        
-        elif is_how_question:
-            # For "how X works" questions  
-            if style == "simple":
-                return f"""Let's break down how '{concept}' works:
-1. What happens first? (What's the initial input or condition?)
-2. What happens in the middle? (What are the main steps?)
-3. What's the final result? (How do you know it worked?)
-4. Can you find a simple real-world example?"""
-            elif style == "conceptual":
-                return f"""To understand how '{concept}' works:
-- What are the key components or parts involved?
-- How do these components interact with each other?
-- What's the sequence of events or logic?
-- What assumptions does this rely on?
-- Where might this approach fail or have limitations?"""
-            else:  # deep
-                return f"""For a deep understanding of how '{concept}' works:
-- What are the underlying mechanisms and algorithms?
-- What is the mathematical or theoretical basis?
-- How does performance scale with complexity?
-- What are the optimization strategies?
-- How does this compare to alternative approaches?"""
-        
-        elif is_why_question:
-            # For "why X" questions
-            if style == "simple":
-                return f"""Great question about why '{concept}' matters:
-1. What problem does '{concept}' solve?
-2. What would happen without '{concept}'?
-3. Can you think of examples where '{concept}' is helpful?
-4. Who benefits from using '{concept}'?"""
-            elif style == "conceptual":
-                return f"""To understand why '{concept}' is important:
-- What problems existed before '{concept}' was developed?
-- What makes '{concept}' better than alternatives?
-- How does it impact efficiency, accuracy, or outcomes?
-- What industries or fields rely on '{concept}'?
-- How might '{concept}' evolve in the future?"""
-            else:  # deep
-                return f"""For deep insight into why '{concept}' matters:
-- What are the historical and theoretical origins?
-- What are the fundamental advantages and trade-offs?
-- How does '{concept}' integrate with related fields?
-- What are current research frontiers and innovations?
-- What are the long-term implications and impact?"""
-        
-        elif is_what_question or concept == 'general':
-            # Default for "what is" or general questions
-            if style == "simple":
-                return f"""Let's explore '{concept}' together:
-1. In one sentence, how would you describe '{concept}'?
-2. What are the most important parts to know?
-3. Can you think of real examples you've seen?
-4. Why do you think this topic matters?"""
-            elif style == "conceptual":
-                return f"""To build understanding of '{concept}':
-- What's the core definition and key terminology?
-- What are the main components or categories?
-- How does '{concept}' relate to things you already understand?
-- What are common misconceptions about '{concept}'?
-- How would you explain it to someone new to the topic?"""
-            else:  # deep
-                return f"""For comprehensive knowledge of '{concept}':
-- What are the precise technical definitions?
-- What are the theoretical foundations and principles?
-- How does '{concept}' generalize or extend?
-- What are the mathematical or formal proofs?
-- What are the cutting-edge advances in this area?"""
-        
-        # Fallback for any unmatched pattern
+    def _local_socratic_response(query: str, concept: str, style: str) -> str:
         if style == "simple":
-            return f"""Let's discuss '{concept}' step by step:
-1. What do you already know about this topic?
-2. What specific aspect are you most curious about?
-3. Can you think of ways you'd use this in practice?
-4. What would help make this clearer for you?"""
-        elif style == "conceptual":
-            return f"""Regarding '{concept}':
-- What is the central concept or idea?
-- How does it fit into the broader field?
-- What are practical applications?
-- How can you deepen your understanding through examples?"""
-        else:
-            return f"""Exploring '{concept}' in depth:
-- What are the foundational principles?
-- What are advanced topics and extensions?
-- How does this connect to cutting-edge research?
-- What are the open questions in this field?"""
+            return (
+                f"Let's unpack {concept} step by step.\n"
+                "1. What does each key term in the question mean to you?\n"
+                f"2. Which part of {concept} feels unclear right now?\n"
+                "3. Can you test your idea with a tiny example before solving the full problem?"
+            )
+
+        if style == "deep":
+            return (
+                f"For a deeper look at {concept}, reason from definitions first.\n"
+                "1. What assumptions are you making implicitly?\n"
+                "2. Can you derive the next step from the formal rule rather than memory?\n"
+                "3. How would your reasoning change under an edge case?"
+            )
+
+        return (
+            f"Great question on {concept}. Let's structure your reasoning.\n"
+            "1. What is the objective of this method?\n"
+            "2. Which inputs control the output most strongly?\n"
+            "3. How would you explain the same idea to a peer with one worked example?"
+        )
 
     @staticmethod
     def _generate_guiding_question(concept: str, style: str) -> str:
-        """Generate follow-up guiding question to deepen understanding."""
-        guiding_questions = {
+        bank = {
             "simple": [
-                f"Can you explain {concept} in simpler terms?",
-                f"What's the first step to understanding {concept}?",
-                f"What real-world example relates to {concept}?"
+                f"What is the first principle behind {concept}?",
+                f"Can you give a one-line definition of {concept} in your own words?",
             ],
             "conceptual": [
-                f"How would you compare {concept} to something you already know?",
-                f"What happens if you change one variable in {concept}?",
-                f"Can you describe the relationship between the parts of {concept}?"
+                f"How does {concept} connect to something you already understand?",
+                f"Which variable in {concept} changes the outcome most?",
             ],
             "deep": [
-                f"What's the mathematical proof behind {concept}?",
-                f"How does {concept} extend to more complex scenarios?",
-                f"What are the limitations and assumptions in {concept}?"
-            ]
+                f"What assumptions make the standard derivation of {concept} valid?",
+                f"How would you formally justify each step in {concept}?",
+            ],
         }
-        
-        import random
-        questions = guiding_questions.get(style, guiding_questions["conceptual"])
-        return random.choice(questions)
+        return random.choice(bank.get(style, bank["conceptual"]))
 
     def _store_response(
         self,
@@ -763,203 +490,288 @@ Recommended path: Start with structured learning (certifications), then build po
         response: str,
         style: str,
         concept: str,
-        weakness: float,
-        confidence: float
+        confidence: float,
     ) -> str:
-        """Store response for audit trail and learning."""
-        import uuid
         response_id = str(uuid.uuid4())
 
-        mentor_response = MentorResponse(
+        snapshot_rows = (
+            self.db.query(WeaknessScore)
+            .filter(WeaknessScore.student_id == student_id)
+            .order_by(desc(WeaknessScore.weakness_score))
+            .limit(5)
+            .all()
+        )
+        weakness_snapshot = {row.concept_name: round(row.weakness_score, 3) for row in snapshot_rows}
+
+        entity = MentorResponse(
             response_id=response_id,
             student_id=student_id,
-            student_weakness_state={"concepts": [concept]},
+            student_weakness_state=weakness_snapshot,
             student_confidence=confidence,
             query=query,
             response=response,
             explanation_style=style,
-            target_concept=concept
+            target_concept=concept,
         )
-        self.db.add(mentor_response)
+        self.db.add(entity)
         self.db.commit()
-
         return response_id
 
 
-# ════════════════════════════════════════════════════════════════════════════════
-# SERVICE 4: FeedbackService
-# ════════════════════════════════════════════════════════════════════════════════
-
 class FeedbackService:
-    """
-    Processes human-in-the-loop feedback.
-    
-    Updates adaptive system based on student reactions to mentor responses.
-    """
+    """Human-in-the-loop feedback processor."""
 
     def __init__(self, db: Session):
         self.db = db
         self.profile_service = StudentProfileService(db)
+        self.weakness_service = WeaknessAnalyzerService(db)
 
     def submit_feedback(
         self,
         student_id: int,
         response_id: str,
-        feedback_type: str,
+        feedback_type: object,
         rating: Optional[float] = None,
         comments: Optional[str] = None,
-        focus_concept: Optional[str] = None
+        focus_concept: Optional[str] = None,
     ) -> Tuple[Feedback, Optional[AdaptationUpdate]]:
-        """
-        Process student feedback and trigger adaptations.
-        
-        Returns: (feedback record, adaptation result if any)
-        """
-        # Store feedback
+        profile = self.profile_service.get_profile(student_id)
+        if not profile:
+            raise ValueError(f"Profile not found for student {student_id}")
+
+        feedback_enum = _coerce_feedback_type(feedback_type)
+
         feedback = Feedback(
             student_id=student_id,
             response_id=response_id,
-            feedback_type=FeedbackType(feedback_type),
+            feedback_type=feedback_enum,
             rating=rating,
             comments=comments,
-            focus_concept=focus_concept
+            focus_concept=(focus_concept or None),
         )
         self.db.add(feedback)
         self.db.commit()
         self.db.refresh(feedback)
 
-        # Adapt based on feedback
-        adaptation = self._adapt_to_feedback(
-            student_id,
-            feedback_type,
-            rating
-        )
+        adaptation = self._adapt_to_feedback(student_id, feedback_enum, rating)
+        self._apply_feedback_to_weakness(student_id, feedback_enum, focus_concept)
 
         return feedback, adaptation
 
     def _adapt_to_feedback(
         self,
         student_id: int,
-        feedback_type: str,
-        rating: Optional[float] = None
+        feedback_type: FeedbackType,
+        rating: Optional[float] = None,
     ) -> Optional[AdaptationUpdate]:
-        """
-        Apply adaptive changes based on feedback.
-        
-        Rules:
-        - "too_easy" → increase difficulty
-        - "too_hard" → decrease difficulty
-        - Low rating → adjust confidence estimate
-        - "helpful" → maintain current level
-        """
         profile = self.profile_service.get_profile(student_id)
         if not profile:
             return None
 
         old_difficulty = profile.preferred_difficulty.value
-        adjustment_reason = ""
+        old_confidence = profile.confidence_level
+        reasons: List[str] = []
 
-        # Adjust based on feedback
-        if feedback_type == "too_easy":
+        if feedback_type == FeedbackType.TOO_EASY:
             if profile.preferred_difficulty == DifficultyLevel.EASY:
                 profile.preferred_difficulty = DifficultyLevel.MEDIUM
-                adjustment_reason = "Content was too easy; increasing difficulty"
+                reasons.append("Raised difficulty to medium after repeated easy feedback")
             elif profile.preferred_difficulty == DifficultyLevel.MEDIUM:
                 profile.preferred_difficulty = DifficultyLevel.HARD
-                adjustment_reason = "Content was too easy; increasing to hard"
+                reasons.append("Raised difficulty to hard after easy feedback")
 
-        elif feedback_type == "too_hard":
+        if feedback_type == FeedbackType.TOO_HARD:
             if profile.preferred_difficulty == DifficultyLevel.HARD:
                 profile.preferred_difficulty = DifficultyLevel.MEDIUM
-                adjustment_reason = "Content was too hard; decreasing difficulty"
+                reasons.append("Reduced difficulty to medium after hard feedback")
             elif profile.preferred_difficulty == DifficultyLevel.MEDIUM:
                 profile.preferred_difficulty = DifficultyLevel.EASY
-                adjustment_reason = "Content was too hard; decreasing to easy"
+                reasons.append("Reduced difficulty to easy after hard feedback")
 
-        # Adjust confidence based on rating
-        if rating:
-            if rating <= 2.0:  # Low satisfaction
+        if feedback_type == FeedbackType.UNCLEAR:
+            profile.confidence_level = max(0.0, profile.confidence_level - 0.05)
+            reasons.append("Reduced confidence slightly due to unclear feedback")
+
+        if rating is not None:
+            if rating <= 2.0:
                 profile.confidence_level = max(0.0, profile.confidence_level - 0.1)
-            elif rating >= 4.0:  # High satisfaction
-                profile.confidence_level = min(1.0, profile.confidence_level + 0.1)
+                reasons.append("Lowered confidence estimate from low rating")
+            elif rating >= 4.0:
+                profile.confidence_level = min(1.0, profile.confidence_level + 0.07)
+                reasons.append("Raised confidence estimate from positive rating")
 
         profile.updated_at = datetime.utcnow()
         self.db.commit()
 
         new_difficulty = profile.preferred_difficulty.value
-        confidence_change = profile.confidence_level
+        if not reasons and new_difficulty == old_difficulty and profile.confidence_level == old_confidence:
+            return None
 
         return AdaptationUpdate(
             previous_difficulty=old_difficulty,
             new_difficulty=new_difficulty,
-            adjustment_reason=adjustment_reason,
-            confidence_change=confidence_change
-        ) if old_difficulty != new_difficulty or adjustment_reason else None
+            adjustment_reason="; ".join(reasons) if reasons else "No major adaptation required",
+            confidence_change=round(profile.confidence_level, 3),
+        )
 
+    def _apply_feedback_to_weakness(
+        self,
+        student_id: int,
+        feedback_type: FeedbackType,
+        focus_concept: Optional[str],
+    ) -> None:
+        if not focus_concept:
+            return
 
-# ════════════════════════════════════════════════════════════════════════════════
-# SERVICE 5: AdaptiveLearningService
-# ════════════════════════════════════════════════════════════════════════════════
+        weakness = self.weakness_service.get_or_create_weakness(student_id, focus_concept)
+
+        delta_map = {
+            FeedbackType.TOO_HARD: 0.08,
+            FeedbackType.UNCLEAR: 0.05,
+            FeedbackType.HELPFUL: -0.03,
+            FeedbackType.TOO_EASY: -0.04,
+        }
+        delta = delta_map.get(feedback_type, 0.0)
+
+        weakness.weakness_score = min(1.0, max(0.0, weakness.weakness_score + delta))
+        weakness.last_updated = datetime.utcnow()
+        self.db.commit()
+
 
 class AdaptiveLearningService:
-    """
-    Orchestrates the complete adaptive learning loop.
-    
-    Coordinates all other services to create a seamless learning experience.
-    """
+    """Adaptive learning orchestrator."""
 
     def __init__(self, db: Session):
         self.db = db
         self.profile_service = StudentProfileService(db)
         self.weakness_service = WeaknessAnalyzerService(db)
-        self.mentor_service = MentorAIService(db)
-        self.feedback_service = FeedbackService(db)
+
+    def create_session(self, student_id: int, topic: str, difficulty_level: object) -> AdaptiveSession:
+        profile = self.profile_service.get_profile(student_id)
+        if not profile:
+            raise ValueError(f"Profile not found for student {student_id}")
+
+        snapshot = self.get_student_context_snapshot(student_id)
+        session = AdaptiveSession(
+            student_id=student_id,
+            topic=(topic or "general"),
+            difficulty_level=_coerce_difficulty(difficulty_level, profile.preferred_difficulty).value,
+            interaction_count=0,
+            context_snapshot=snapshot.model_dump(),
+        )
+        self.db.add(session)
+        self.db.commit()
+        self.db.refresh(session)
+        return session
 
     def get_student_context_snapshot(self, student_id: int) -> StudentContextSnapshot:
-        """Get full snapshot of student learning context."""
         profile = self.profile_service.get_profile(student_id)
-        weaknesses = self.weakness_service.get_weakest_concepts(student_id, limit=3)
+        if not profile:
+            raise ValueError(f"Profile not found for student {student_id}")
 
-        # Determine sentiment from recent feedback
-        recent_feedback = self.db.query(Feedback).filter(
-            Feedback.student_id == student_id
-        ).order_by(desc(Feedback.created_at)).limit(5).all()
-
-        sentiment = self._analyze_feedback_sentiment(recent_feedback)
+        weaknesses = self.weakness_service.get_weakest_concepts(student_id, limit=5)
+        strength_areas = self.weakness_service.get_strength_areas(student_id, limit=3)
+        recent_feedback = (
+            self.db.query(Feedback)
+            .filter(Feedback.student_id == student_id)
+            .order_by(desc(Feedback.created_at))
+            .limit(10)
+            .all()
+        )
 
         return StudentContextSnapshot(
-            confidence_level=profile.confidence_level,
-            primary_weakness_concepts=[w.concept_name for w in weaknesses],
-            strength_areas=[],  # TODO: Extract strength areas
+            confidence_level=round(profile.confidence_level, 3),
+            primary_weakness_concepts=[row.concept_name for row in weaknesses],
+            strength_areas=strength_areas,
             preferred_difficulty=profile.preferred_difficulty.value,
-            recent_feedback_sentiment=sentiment
+            recent_feedback_sentiment=self._analyze_feedback_sentiment(recent_feedback),
         )
+
+    def generate_recommendations(self, student_id: int) -> List[Dict]:
+        context = self.get_student_context_snapshot(student_id)
+        profile = self.profile_service.get_profile(student_id)
+        weaknesses = self.weakness_service.get_weakest_concepts(student_id, limit=3)
+        recommendations: List[Dict] = []
+
+        for row in weaknesses:
+            if row.weakness_score >= 0.5:
+                recommendations.append(
+                    {
+                        "priority": "high",
+                        "recommendation_type": "Concept Review",
+                        "suggested_action": f"Practice {row.concept_name} with 3 scaffolded questions",
+                        "explanation": f"Weakness score is {row.weakness_score:.2f}, indicating repeated difficulty.",
+                    }
+                )
+
+        if context.recent_feedback_sentiment == "negative":
+            recommendations.append(
+                {
+                    "priority": "high",
+                    "recommendation_type": "Difficulty Adjustment",
+                    "suggested_action": "Use simpler explanations for next session and increase step-by-step prompts",
+                    "explanation": "Recent feedback trend is negative (too_hard/unclear dominates).",
+                }
+            )
+
+        if context.confidence_level < 0.45:
+            focus = context.strength_areas[0] if context.strength_areas else "a familiar topic"
+            recommendations.append(
+                {
+                    "priority": "medium",
+                    "recommendation_type": "Confidence Boost",
+                    "suggested_action": f"Start next session with a quick win in {focus}",
+                    "explanation": "Confidence level is below 0.45; quick successes can improve learning momentum.",
+                }
+            )
+
+        if profile and profile.preferred_difficulty == DifficultyLevel.HARD and context.recent_feedback_sentiment == "positive":
+            recommendations.append(
+                {
+                    "priority": "low",
+                    "recommendation_type": "Challenge Extension",
+                    "suggested_action": "Add one transfer question connecting two concepts",
+                    "explanation": "Positive feedback at high difficulty suggests readiness for integrative tasks.",
+                }
+            )
+
+        if not recommendations:
+            recommendations.append(
+                {
+                    "priority": "low",
+                    "recommendation_type": "Steady Practice",
+                    "suggested_action": "Continue current plan and review one recent concept",
+                    "explanation": "No major risk signals detected from recent data.",
+                }
+            )
+
+        return recommendations
 
     @staticmethod
     def _analyze_feedback_sentiment(feedbacks: List[Feedback]) -> str:
-        """Analyze sentiment of recent feedback."""
         if not feedbacks:
             return "neutral"
 
-        positive = sum(1 for f in feedbacks if f.feedback_type == FeedbackType.HELPFUL)
-        negative = sum(1 for f in feedbacks if f.feedback_type in [
-            FeedbackType.TOO_HARD,
-            FeedbackType.UNCLEAR
-        ])
+        score = 0
+        for row in feedbacks:
+            if row.feedback_type == FeedbackType.HELPFUL:
+                score += 1
+            elif row.feedback_type == FeedbackType.TOO_EASY:
+                score += 0
+            else:
+                score -= 1
 
-        if positive > negative:
+        if score > 0:
             return "positive"
-        elif negative > positive:
+        if score < 0:
             return "negative"
-        else:
-            return "neutral"
+        return "neutral"
 
 
-# Export all services for easy importing
 __all__ = [
     "StudentProfileService",
     "WeaknessAnalyzerService",
     "MentorAIService",
     "FeedbackService",
-    "AdaptiveLearningService"
+    "AdaptiveLearningService",
 ]
