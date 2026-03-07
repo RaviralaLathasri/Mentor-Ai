@@ -62,8 +62,7 @@ export default function Chat() {
     }
   };
 
-  const sendMessage = async (event) => {
-    event.preventDefault();
+  const sendCurrentMessage = async () => {
     if (!canSend) return;
 
     const text = query.trim();
@@ -105,6 +104,18 @@ export default function Chat() {
       ]);
     } finally {
       setSending(false);
+    }
+  };
+
+  const sendMessage = async (event) => {
+    event.preventDefault();
+    await sendCurrentMessage();
+  };
+
+  const handleTextareaKeyDown = async (event) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      await sendCurrentMessage();
     }
   };
 
@@ -175,9 +186,11 @@ export default function Chat() {
                 rows="3"
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={handleTextareaKeyDown}
                 placeholder="Example: Why does gradient descent use the negative gradient?"
               />
             </label>
+            <small>Press Enter to send. Use Shift+Enter for a new line.</small>
             <div className="button-row">
               <button type="submit" className="primary-btn" disabled={!canSend}>
                 {sending ? "Thinking..." : "Send"}

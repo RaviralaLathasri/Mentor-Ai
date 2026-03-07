@@ -43,6 +43,19 @@ export default function WeaknessAnalyzer() {
     loadWeaknesses();
   }, [studentId]);
 
+  const refreshWeaknesses = async () => {
+    if (!studentId) return;
+    setLoading(true);
+    try {
+      const response = await wellnessApi.getWeakestConcepts(studentId, 8);
+      setWeaknesses(response.weakest_concepts || []);
+    } catch (error) {
+      setNotice({ type: "error", message: error.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const clearStudent = () => {
     setStudentId(null);
     setResult(null);
@@ -94,6 +107,80 @@ export default function WeaknessAnalyzer() {
         </section>
       ) : (
         <>
+          <section className="panel chart-panel">
+            <div className="section-header-inline">
+              <h3>Weakest Concept Graph</h3>
+              <button type="button" className="secondary-btn" onClick={() => refreshWeaknesses()} disabled={loading}>
+                {loading ? "Refreshing..." : "Refresh"}
+              </button>
+            </div>
+            {weaknesses.length === 0 ? <p>No weakness data yet. Submit one quiz outcome below to start tracking.</p> : null}
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={weaknesses}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="concept" />
+                <YAxis domain={[0, 1]} />
+                <Tooltip />
+                <Bar dataKey="weakness_score" fill="#ef4444" />
+              </BarChart>
+            </ResponsiveContainer>
+          </section>
+
+          <section className="panel">
+            <h3>Concept Ranking</h3>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Rank</th>
+                  <th>Concept</th>
+                  <th>Weakness Score</th>
+                  <th>Priority</th>
+                </tr>
+              </thead>
+              <tbody>
+                {weaknesses.length === 0 ? (
+                  <tr>
+                    <td colSpan="4">No weakness data yet.</td>
+                  </tr>
+                ) : (
+                  weaknesses.map((item, index) => (
+                    <tr key={`${item.concept}-${index}`}>
+                      <td>{index + 1}</td>
+                      <td>{item.concept}</td>
+                      <td>{item.weakness_score}</td>
+                      <td>{item.learning_priority}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </section>
+
+          {result ? (
+            <section className="panel">
+              <h3>Latest Analysis</h3>
+              <div className="grid two">
+                <p>
+                  <strong>Concept:</strong> {result.concept_name}
+                </p>
+                <p>
+                  <strong>Priority:</strong> {result.learning_priority}
+                </p>
+                <p>
+                  <strong>Old Score:</strong> {result.old_weakness_score}
+                </p>
+                <p>
+                  <strong>New Score:</strong> {result.new_weakness_score}
+                </p>
+              </div>
+              {result.misconception_detected ? (
+                <p>
+                  <strong>Detected Misconception:</strong> {result.misconception_detected}
+                </p>
+              ) : null}
+            </section>
+          ) : null}
+
           <form className="panel form-grid" onSubmit={handleSubmit}>
             <h3>Submit Quiz Outcome</h3>
             <label>
@@ -143,74 +230,6 @@ export default function WeaknessAnalyzer() {
               </button>
             </div>
           </form>
-
-          {result ? (
-            <section className="panel">
-              <h3>Latest Analysis</h3>
-              <div className="grid two">
-                <p>
-                  <strong>Concept:</strong> {result.concept_name}
-                </p>
-                <p>
-                  <strong>Priority:</strong> {result.learning_priority}
-                </p>
-                <p>
-                  <strong>Old Score:</strong> {result.old_weakness_score}
-                </p>
-                <p>
-                  <strong>New Score:</strong> {result.new_weakness_score}
-                </p>
-              </div>
-              {result.misconception_detected ? (
-                <p>
-                  <strong>Detected Misconception:</strong> {result.misconception_detected}
-                </p>
-              ) : null}
-            </section>
-          ) : null}
-
-          <section className="panel chart-panel">
-            <h3>Weakest Concept Graph</h3>
-            <ResponsiveContainer width="100%" height={300}>
-              <BarChart data={weaknesses}>
-                <CartesianGrid strokeDasharray="3 3" />
-                <XAxis dataKey="concept" />
-                <YAxis domain={[0, 1]} />
-                <Tooltip />
-                <Bar dataKey="weakness_score" fill="#ef4444" />
-              </BarChart>
-            </ResponsiveContainer>
-          </section>
-
-          <section className="panel">
-            <h3>Concept Ranking</h3>
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>Rank</th>
-                  <th>Concept</th>
-                  <th>Weakness Score</th>
-                  <th>Priority</th>
-                </tr>
-              </thead>
-              <tbody>
-                {weaknesses.length === 0 ? (
-                  <tr>
-                    <td colSpan="4">No weakness data yet.</td>
-                  </tr>
-                ) : (
-                  weaknesses.map((item, index) => (
-                    <tr key={`${item.concept}-${index}`}>
-                      <td>{index + 1}</td>
-                      <td>{item.concept}</td>
-                      <td>{item.weakness_score}</td>
-                      <td>{item.learning_priority}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </section>
         </>
       )}
     </PageShell>
