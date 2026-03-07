@@ -357,6 +357,13 @@ class MentorAIService:
         inferred = self._infer_concept(query)
         extracted_topic = self._extract_topic_from_query(query)
         query_l = (query or "").lower()
+        if self._is_skills_query(query_l):
+            if any(token in query_l for token in ["machine learning", " ml ", " ai", "ai ", "artificial intelligence"]):
+                return "machine learning"
+            if any(token in query_l for token in ["data analyst", "data analysis", "analytics", "business intelligence"]):
+                return "data analysis"
+            if "backend" in query_l:
+                return "backend engineering"
         continuation_tokens = [
             "current level",
             "timeline",
@@ -566,6 +573,11 @@ class MentorAIService:
             "become",
             "month",
             "months",
+            "required",
+            "skill",
+            "skills",
+            "prerequisite",
+            "prerequisites",
         }
         words = [word for word in phrase.split() if word not in filler and not word.isdigit()]
         if not words:
@@ -622,6 +634,9 @@ class MentorAIService:
         return "general"
 
     def _generate_socratic_response(self, student_id: int, query: str, concept: str, style: str, context: Dict) -> str:
+        if self._is_skills_query((query or "").lower()):
+            return self._skills_requirement_response(query=query, concept=concept, context=context)
+
         llm_text = self._try_llm_response(
             student_id=student_id,
             query=query,
@@ -632,6 +647,79 @@ class MentorAIService:
         if llm_text:
             return llm_text
         return self._local_socratic_response(query=query, concept=concept, style=style)
+
+    @staticmethod
+    def _is_skills_query(query_l: str) -> bool:
+        skill_tokens = [
+            "what skills",
+            "which skills",
+            "required skills",
+            "skills required",
+            "skill set",
+            "prerequisite",
+            "prerequisites",
+            "skills for",
+            "need to learn",
+        ]
+        return any(token in query_l for token in skill_tokens)
+
+    def _skills_requirement_response(self, query: str, concept: str, context: Dict) -> str:
+        query_l = (query or "").lower()
+        normalized_concept = self._normalize_topic_alias(concept)
+        known_skills: List[str] = []
+        if isinstance(context, dict):
+            raw = context.get("skills")
+            if isinstance(raw, list):
+                known_skills = [str(item).strip() for item in raw if str(item).strip()]
+
+        if any(token in query_l for token in ["ai", "artificial intelligence", "machine learning", "ml"]):
+            normalized_concept = "machine learning"
+        elif any(token in query_l for token in ["data analyst", "data analysis", "analytics", "business intelligence"]):
+            normalized_concept = "data analysis"
+
+        if normalized_concept == "machine learning":
+            intro = "Required skills for AI/ML:"
+            core = (
+                "1. Programming: Python, data structures, Git, clean coding\n"
+                "2. Math: linear algebra, probability, statistics, basic calculus\n"
+                "3. ML fundamentals: supervised/unsupervised learning, model evaluation, bias-variance\n"
+                "4. Data skills: pandas, SQL, feature engineering, data cleaning\n"
+                "5. Model tooling: scikit-learn plus TensorFlow/PyTorch basics\n"
+                "6. Portfolio: 2-3 end-to-end projects with clear metrics and business impact"
+            )
+        elif normalized_concept == "data analysis":
+            intro = "Required skills for Data Analyst:"
+            core = (
+                "1. SQL: joins, group by, window functions\n"
+                "2. Excel/Sheets: pivots, lookups, data cleaning\n"
+                "3. Statistics: distributions, hypothesis testing, confidence intervals\n"
+                "4. BI: Power BI or Tableau dashboards and storytelling\n"
+                "5. Python (highly useful): pandas + visualization\n"
+                "6. Communication: convert findings into clear recommendations"
+            )
+        else:
+            intro = f"Required skills for {normalized_concept}:"
+            core = (
+                "1. Fundamentals and core terminology\n"
+                "2. Practical tools used in real projects\n"
+                "3. Problem-solving patterns and trade-offs\n"
+                "4. Portfolio projects with measurable outcomes\n"
+                "5. Interview-style practice and clear communication"
+            )
+
+        known_line = ""
+        if known_skills:
+            top_known = ", ".join(known_skills[:4])
+            known_line = (
+                f"\n\nYou already have: {top_known}.\n"
+                "Focus next on the missing math/statistics and project depth."
+            )
+
+        return (
+            f"{intro}\n{core}"
+            f"{known_line}\n\n"
+            "Tell me your level and timeline, and I will convert this into a week-by-week plan."
+        )
 
     def _select_model(self) -> str:
         configured = os.getenv("OPENAI_API_MODEL")
