@@ -60,6 +60,27 @@ npm run dev
 
 Frontend app: `http://localhost:5173`
 
+## Mentor answer quality troubleshooting
+
+If mentor answers look generic:
+
+1. Confirm `.env` has a valid LLM key/base.
+2. Restart backend after `.env` changes.
+3. Watch backend logs while asking a question.
+
+If you see this warning, the app is using local fallback templates:
+
+```text
+[WARN] LLM response failed; falling back to local templates.
+```
+
+Recommended OpenRouter env values:
+
+```env
+OPENAI_API_BASE=https://openrouter.ai/api/v1
+OPENAI_API_MODEL=openrouter/auto
+```
+
 ## Deployment
 
 See [DEPLOYMENT_READY_GUIDE.md](DEPLOYMENT_READY_GUIDE.md) for production deployment steps.

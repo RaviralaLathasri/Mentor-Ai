@@ -19,14 +19,13 @@ def get_openai_client() -> OpenAI:
     * OPENAI_API_BASE   - the base url for the API (e.g. ``https://openrouter.ai/api/v1``)
     * OPENAI_API_MODEL  - optional default model to use (not required)
     """
-    api_key = os.getenv("OPENAI_API_KEY")
+    api_key = os.getenv("OPENAI_API_KEY") or "any-key"
     api_base = os.getenv("OPENAI_API_BASE")
 
-    # ``OpenAI`` constructor doesn't accept ``api_base`` directly, so we
-    # set it on the returned object if provided.
-    client = OpenAI(api_key=api_key) if api_key else OpenAI()
-
+    # OpenAI SDK v1 expects `base_url`, not `api_base`.
+    client_kwargs = {"api_key": api_key}
     if api_base:
-        client.api_base = api_base
+        client_kwargs["base_url"] = api_base
 
+    client = OpenAI(**client_kwargs)
     return client
