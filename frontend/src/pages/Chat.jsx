@@ -41,6 +41,27 @@ export default function Chat() {
     setNotice({ type: "info", message: "Student context cleared." });
   };
 
+  const requestMentorResponse = async (payload, retries = 1) => {
+    try {
+      return await mentorApi.respond(payload);
+    } catch (error) {
+      const message = (error?.message || "").toLowerCase();
+      const isTransient =
+        message.includes("timeout") ||
+        message.includes("network") ||
+        message.includes("failed to fetch") ||
+        message.includes("503") ||
+        message.includes("502") ||
+        message.includes("500");
+
+      if (retries > 0 && isTransient) {
+        await new Promise((resolve) => setTimeout(resolve, 600));
+        return requestMentorResponse(payload, retries - 1);
+      }
+      throw error;
+    }
+  };
+
   const sendMessage = async (event) => {
     event.preventDefault();
     if (!canSend) return;
@@ -52,7 +73,7 @@ export default function Chat() {
     setSending(true);
 
     try {
-      const response = await mentorApi.respond({
+      const response = await requestMentorResponse({
         student_id: studentId,
         query: text,
       });
@@ -72,7 +93,16 @@ export default function Chat() {
       ]);
       setNotice({ type: "success", message: "Mentor response generated." });
     } catch (error) {
-      setNotice({ type: "error", message: error.message });
+      const errorText = error?.message || "Could not generate mentor response.";
+      setNotice({ type: "error", message: errorText });
+      setMessages((previous) => [
+        ...previous,
+        {
+          id: `a-error-${Date.now()}`,
+          role: "assistant",
+          text: `I could not reply due to a temporary issue: ${errorText}. Please press Send again.`,
+        },
+      ]);
     } finally {
       setSending(false);
     }
