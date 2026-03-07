@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import random
 import re
+import time
 import uuid
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -285,6 +286,7 @@ class WeaknessAnalyzerService:
 
 class MentorAIService:
     """Generate adaptive Socratic mentor responses."""
+    _llm_backoff_until: float = 0.0
 
     def __init__(self, db: Session):
         self.db = db
@@ -475,6 +477,8 @@ class MentorAIService:
             "machine learning": [
                 "machine learning",
                 "ml",
+                "ai",
+                "artificial intelligence",
                 "supervised",
                 "unsupervised",
                 "model training",
@@ -594,7 +598,7 @@ class MentorAIService:
             r"^(?:what is|what are|define|explain)\s+(.+)$",
             r"^(?:why does|why do|why is|why are|why)\s+(.+)$",
             r"^(?:how does|how do|how can|how to|how)\s+(.+)$",
-            r"(?:roadmap|plan|path)\s+(?:for|to become)\s+(.+)$",
+            r"(?:roadmap|road map|plan|path)\s+(?:for|to become)\s+(.+)$",
             r"(?:learn|study)\s+(.+)$",
             r"(?:difference between|compare)\s+(.+?)\s+(?:and|vs)\s+(.+)$",
         ]
@@ -682,6 +686,8 @@ class MentorAIService:
         api_base = os.getenv("OPENAI_API_BASE")
         if not api_key:
             return None
+        if time.time() < MentorAIService._llm_backoff_until:
+            return None
 
         candidate_models = self._model_candidates()
         style_instruction = {
@@ -731,16 +737,18 @@ class MentorAIService:
                         temperature=0.4,
                         max_tokens=700,
                         extra_headers=headers,
-                        timeout=20,
+                        timeout=8,
                     )
                     content = completion.choices[0].message.content if completion.choices else None
                     if content:
+                        MentorAIService._llm_backoff_until = 0.0
                         return content.strip()
                 except Exception as model_error:
                     model_error_text = str(model_error)
                     errors.append(f"{model}: {model_error_text}")
                     lower_error = model_error_text.lower()
                     if any(token in lower_error for token in ["connection error", "timed out", "unauthorized", "invalid api key"]):
+                        MentorAIService._llm_backoff_until = time.time() + 180
                         break
         except Exception as e:
             print(f"[WARN] LLM client init failed; falling back to local templates. Error: {e}")
@@ -888,7 +896,7 @@ class MentorAIService:
         asks_why = query_l.startswith("why ") or " why " in query_l
         asks_how = query_l.startswith("how ") or " how " in query_l
         asks_compare = "difference between" in query_l or " compare " in query_l or " vs " in query_l
-        asks_for_roadmap = any(token in query_l for token in ["roadmap", "plan", "path", "career", "become", "from scratch"])
+        asks_for_roadmap = any(token in query_l for token in ["roadmap", "road map", "plan", "path", "career", "become", "from scratch"])
         roadmap_continuation = any(
             token in query_l
             for token in ["current level", "timeline", "month", "months", "week", "weeks", "beginner", "intermediate", "advanced"]
