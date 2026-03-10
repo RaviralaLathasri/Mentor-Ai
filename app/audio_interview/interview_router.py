@@ -156,10 +156,8 @@ async def _resolve_store_mode() -> Tuple[str, Optional[str]]:
 
         if requested == "memory":
             _STORE_MODE = "memory"
-            _STORE_WARNING = (
-                "Using in-memory interview session store (INTERVIEW_STORE_BACKEND=memory). "
-                "This is intended for local/dev only; use Redis for production."
-            )
+            # Explicit choice: don't warn in the UI, but keep behavior predictable.
+            _STORE_WARNING = None
             return _STORE_MODE, _STORE_WARNING
 
         if requested == "redis":
@@ -181,6 +179,7 @@ async def _resolve_store_mode() -> Tuple[str, Optional[str]]:
         _STORE_WARNING = (
             f"Redis is unavailable at {_redis_url()} ({err}). "
             "Falling back to in-memory session store for this process. "
+            "To start local Redis (Windows): powershell -ExecutionPolicy Bypass -File scripts\\dev_redis.ps1. "
             "For production, run Redis and set INTERVIEW_STORE_BACKEND=redis."
         )
         logger.warning(_STORE_WARNING)
