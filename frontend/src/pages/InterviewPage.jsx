@@ -295,14 +295,14 @@ export default function InterviewPage() {
 
           <section className="panel">
             <h3>Live Transcript</h3>
-            <LiveTranscript text={transcript} />
+            <LiveTranscript text={transcript} sttEnabled={sttEnabled} listening={listening} />
           </section>
 
           <section className="panel">
             <h3>Microphone</h3>
             <div className="button-row" style={{ marginBottom: 10 }}>
               {!listening ? (
-                <button className="primary-btn" onClick={startMic} disabled={!connected || aiSpeaking}>
+                <button className="primary-btn" onClick={startMic} disabled={!connected || aiSpeaking || !sttEnabled}>
                   Start Mic
                 </button>
               ) : (
@@ -313,6 +313,11 @@ export default function InterviewPage() {
               <small style={{ alignSelf: "center", color: "var(--muted)" }}>
                 Speak when <strong>Listening</strong> is <strong>Yes</strong>.
               </small>
+              {!sttEnabled ? (
+                <small style={{ alignSelf: "center", color: "var(--muted)" }}>
+                  <strong>STT:</strong> Disabled (set <code>GROQ_API_KEY</code>)
+                </small>
+              ) : null}
             </div>
             <AudioRecorder
               wsRef={wsRef}

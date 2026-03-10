@@ -38,14 +38,17 @@ function floatTo16BitPCM(float32Array) {
 
 export default function AudioRecorder({ wsRef, enabled, onError }) {
   const [status, setStatus] = useState("idle");
+  const [level, setLevel] = useState(0);
 
   const streamRef = useRef(null);
   const audioContextRef = useRef(null);
   const processorRef = useRef(null);
   const sourceRef = useRef(null);
+  const lastLevelUpdateRef = useRef(0);
 
   const stop = async () => {
     setStatus("idle");
+    setLevel(0);
     try {
       if (processorRef.current) {
         processorRef.current.disconnect();
@@ -92,6 +95,12 @@ export default function AudioRecorder({ wsRef, enabled, onError }) {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       const audioContext = new AudioCtx();
       audioContextRef.current = audioContext;
+      try {
+        // Some browsers start AudioContext in "suspended" until a user gesture; resume is safe regardless.
+        await audioContext.resume();
+      } catch {
+        // ignore
+      }
 
       const source = audioContext.createMediaStreamSource(stream);
       sourceRef.current = source;
@@ -102,10 +111,26 @@ export default function AudioRecorder({ wsRef, enabled, onError }) {
 
       processor.onaudioprocess = (event) => {
         try {
+          if (!wsRef?.current || wsRef.current.readyState !== WebSocket.OPEN) {
+            return;
+          }
           const input = event.inputBuffer.getChannelData(0);
+          // Basic level meter (RMS). Rate-limit state updates to avoid re-rendering too often.
+          let sum = 0;
+          for (let i = 0; i < input.length; i++) {
+            const v = input[i];
+            sum += v * v;
+          }
+          const rms = Math.sqrt(sum / Math.max(1, input.length));
+          const now = performance.now();
+          if (now - lastLevelUpdateRef.current > 200) {
+            lastLevelUpdateRef.current = now;
+            setLevel(rms);
+          }
+
           const downsampled = downsampleBuffer(input, audioContext.sampleRate, 16000);
           const pcm16 = floatTo16BitPCM(downsampled);
-          ws.send(pcm16);
+          wsRef.current.send(pcm16);
         } catch {
           // ignore transient audio errors
         }
@@ -131,7 +156,11 @@ export default function AudioRecorder({ wsRef, enabled, onError }) {
   return (
     <div className="inline-status">
       <strong>Status:</strong> {status}
+      {status === "recording" ? (
+        <span className="muted" style={{ marginLeft: 10 }}>
+          Level: {Math.round(Math.min(1, Math.max(0, level)) * 100)}%
+        </span>
+      ) : null}
     </div>
   );
 }
-

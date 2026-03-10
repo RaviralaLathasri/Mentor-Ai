@@ -117,6 +117,30 @@ def _aggregate_report(evaluations: List[Dict[str, Any]]) -> Dict[str, Any]:
     }
 
 
+def _stt_segment_bytes() -> int:
+    """
+    How much PCM16LE audio to buffer before triggering an STT call.
+
+    16kHz mono PCM16 => 32000 bytes/sec.
+    Keep this relatively small for perceived "real-time" behavior.
+    """
+    # Prefer bytes override if provided.
+    raw_bytes = (os.getenv("STT_SEGMENT_BYTES") or "").strip()
+    if raw_bytes:
+        try:
+            return max(8000, min(32000 * 10, int(raw_bytes)))
+        except Exception:
+            pass
+
+    raw_sec = (os.getenv("STT_SEGMENT_SECONDS") or "1.2").strip()
+    try:
+        sec = float(raw_sec)
+    except Exception:
+        sec = 1.2
+    sec = _clamp(sec, 0.5, 6.0)
+    return int(sec * 16000 * 2)
+
+
 async def _probe_redis() -> Tuple[bool, str]:
     try:
         redis = await _redis_client()
@@ -390,7 +414,7 @@ async def audio_interview_ws(websocket: WebSocket):
     questions: List[str] = []
     current_index = 0
 
-    stt_stream = _STTStreamProcessor(websocket=websocket, stt=stt)
+    stt_stream = _STTStreamProcessor(websocket=websocket, stt=stt, segment_bytes=_stt_segment_bytes())
     await stt_stream.start()
 
     async def _send_question() -> None:
@@ -464,6 +488,13 @@ async def audio_interview_ws(websocket: WebSocket):
                 await store.set_questions(session_id, questions)
 
                 current_index = 0
+                warnings: List[str] = []
+                if store_warning:
+                    warnings.append(store_warning)
+                if not stt.enabled():
+                    warnings.append("STT not configured: set GROQ_API_KEY to enable transcription.")
+                if not tts_enabled:
+                    warnings.append("TTS not configured: set ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID to enable question audio.")
                 await websocket.send_text(
                     _safe_json(
                         {
@@ -475,7 +506,7 @@ async def audio_interview_ws(websocket: WebSocket):
                             "stt_enabled": stt.enabled(),
                             "tts_enabled": tts_enabled,
                             "store_backend": store_backend,
-                            "warnings": [store_warning] if store_warning else [],
+                            "warnings": warnings,
                         }
                     )
                 )
