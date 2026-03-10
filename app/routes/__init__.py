@@ -14,6 +14,7 @@ All routers organized by feature:
 - resume: Resume upload mentoring
 - career: Career roadmap generation
 - interview: Mock interview generation/playback
+- audio_interview: Live audio interview (WebSockets + Redis, no audio storage)
 - quiz: Quiz management (legacy)
 - students: Student records (legacy)
 - mentor: Mentor chat (legacy)
@@ -30,6 +31,7 @@ from . import analytics
 from . import resume
 from . import career
 from . import interview
+from . import audio_interview
 
 __all__ = [
     "profiles",
@@ -42,4 +44,5 @@ __all__ = [
     "resume",
     "career",
     "interview",
+    "audio_interview",
 ]

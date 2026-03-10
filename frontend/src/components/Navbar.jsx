@@ -7,6 +7,7 @@ const navItems = [
   { to: "/weakness", label: "Weakness" },
   { to: "/explain", label: "Explain Mistake" },
   { to: "/resume", label: "Resume Mentor" },
+  { to: "/audio-interview", label: "Audio Interview" },
   { to: "/analytics", label: "Analytics" },
   { to: "/career-roadmap", label: "Career Roadmap" },
 ];

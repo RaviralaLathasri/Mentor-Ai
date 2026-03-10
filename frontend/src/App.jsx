@@ -7,6 +7,7 @@ import Chat from "./pages/Chat";
 import Dashboard from "./pages/Dashboard";
 import ExplainMistake from "./pages/ExplainMistake";
 import Home from "./pages/Home";
+import InterviewPage from "./pages/InterviewPage";
 import Profile from "./pages/Profile";
 import ResumeMentor from "./pages/ResumeMentor";
 import WeaknessAnalyzer from "./pages/WeaknessAnalyzer";
@@ -23,6 +24,7 @@ export default function App() {
         <Route path="/weakness" element={<WeaknessAnalyzer />} />
         <Route path="/explain" element={<ExplainMistake />} />
         <Route path="/resume" element={<ResumeMentor />} />
+        <Route path="/audio-interview" element={<InterviewPage />} />
         <Route path="/analytics" element={<AnalyticsDashboard />} />
         <Route path="/career-roadmap" element={<CareerRoadmap />} />
         <Route path="*" element={<Navigate to="/" replace />} />

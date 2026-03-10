@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import init_db
-from app.routes import adaptive, analytics, career, explain_mistakes, feedback_loop, interview, mentor_ai, profiles, resume, wellness
+from app.routes import adaptive, analytics, audio_interview, career, explain_mistakes, feedback_loop, interview, mentor_ai, profiles, resume, wellness
 
 app = FastAPI(
     title="AI Mentor System",
@@ -38,6 +38,7 @@ app.include_router(analytics.router)
 app.include_router(resume.router)
 app.include_router(career.router)
 app.include_router(interview.router)
+app.include_router(audio_interview.router)
 
 
 @app.on_event("startup")

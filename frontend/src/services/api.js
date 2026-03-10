@@ -7,7 +7,18 @@ function normalizeBaseUrl(url) {
   return url.replace("://localhost", "://127.0.0.1");
 }
 
-const API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL) || "http://127.0.0.1:8000";
+export const API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL) || "http://127.0.0.1:8000";
+
+export function wsBaseUrl() {
+  // If API_BASE_URL is relative (""), derive WS URL from current origin.
+  if (!API_BASE_URL) {
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    return `${proto}//${window.location.host}`;
+  }
+  if (API_BASE_URL.startsWith("https://")) return API_BASE_URL.replace(/^https:/, "wss:");
+  if (API_BASE_URL.startsWith("http://")) return API_BASE_URL.replace(/^http:/, "ws:");
+  return API_BASE_URL;
+}
 
 const api = axios.create({
   baseURL: API_BASE_URL,
