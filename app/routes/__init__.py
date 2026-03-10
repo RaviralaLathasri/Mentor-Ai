@@ -11,6 +11,9 @@ All routers organized by feature:
 - adaptive: Adaptive learning control
 - explain_mistakes: Misconception detection
 - analytics: Learning analytics (read-only)
+- resume: Resume upload mentoring
+- career: Career roadmap generation
+- interview: Mock interview generation/playback
 - quiz: Quiz management (legacy)
 - students: Student records (legacy)
 - mentor: Mentor chat (legacy)
@@ -24,6 +27,9 @@ from . import feedback_loop
 from . import adaptive
 from . import explain_mistakes
 from . import analytics
+from . import resume
+from . import career
+from . import interview
 
 __all__ = [
     "profiles",
@@ -33,4 +39,7 @@ __all__ = [
     "adaptive",
     "explain_mistakes",
     "analytics",
+    "resume",
+    "career",
+    "interview",
 ]

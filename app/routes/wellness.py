@@ -10,14 +10,42 @@ Student learning wellness monitoring:
 - Get learning recommendations
 """
 
+from typing import Optional
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.schemas import QuizAnswerSubmit, WeaknessAnalysisResult
+from app.schemas import (
+    QuizAnswerSubmit,
+    QuizAttemptSubmit,
+    QuizQuestionResponse,
+    WeaknessAnalysisResult,
+)
 from app.services import WeaknessAnalyzerService
 
 router = APIRouter(prefix="/api/analyze", tags=["Learning Wellness"])
+
+
+@router.get("/quiz-question", response_model=QuizQuestionResponse)
+def get_quiz_question(
+    student_id: int,
+    concept_name: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Generate one quiz question for a concept.
+
+    If concept_name is omitted, the service picks from the student's weak areas.
+    """
+    try:
+        service = WeaknessAnalyzerService(db)
+        return service.generate_quiz_question(student_id=student_id, concept_name=concept_name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        print(f"[ERROR] get_quiz_question: {str(e)} | student_id={student_id}")
+        raise HTTPException(status_code=500, detail="Error generating quiz question")
 
 
 @router.post("/quiz", response_model=WeaknessAnalysisResult)
@@ -52,6 +80,31 @@ def analyze_quiz_result(
     except Exception as e:
         print(f"[ERROR] analyze_quiz_result: {str(e)} | student_id={answer.student_id}")
         raise HTTPException(status_code=500, detail="Error analyzing quiz result")
+
+
+@router.post("/quiz-attempt", response_model=WeaknessAnalysisResult)
+def analyze_quiz_attempt(
+    attempt: QuizAttemptSubmit,
+    db: Session = Depends(get_db),
+):
+    """
+    Evaluate a quiz answer automatically and update weakness tracking.
+    """
+    try:
+        service = WeaknessAnalyzerService(db)
+        return service.analyze_generated_quiz_attempt(
+            student_id=attempt.student_id,
+            concept_name=attempt.concept_name,
+            question=attempt.question,
+            student_answer=attempt.student_answer,
+            reference_answer=attempt.reference_answer,
+            keywords=attempt.keywords,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        print(f"[ERROR] analyze_quiz_attempt: {str(e)} | student_id={attempt.student_id}")
+        raise HTTPException(status_code=500, detail="Error analyzing quiz attempt")
 
 
 @router.get("/weakest-concepts/{student_id}")

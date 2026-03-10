@@ -7,97 +7,121 @@ import StudentBanner from "../components/StudentBanner";
 import useStudentId from "../hooks/useStudentId";
 import { wellnessApi } from "../services/api";
 
-const initialQuizForm = {
-  concept_name: "",
-  is_correct: false,
-  student_answer: "",
-  correct_answer: "",
-};
-
 export default function WeaknessAnalyzer() {
   const [studentId, setStudentId] = useStudentId();
-  const [quizForm, setQuizForm] = useState(initialQuizForm);
+  const [quizConcept, setQuizConcept] = useState("");
+  const [activeQuestion, setActiveQuestion] = useState(null);
+  const [studentAnswer, setStudentAnswer] = useState("");
   const [result, setResult] = useState(null);
   const [weaknesses, setWeaknesses] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [loadingWeaknesses, setLoadingWeaknesses] = useState(false);
+  const [loadingQuestion, setLoadingQuestion] = useState(false);
+  const [submittingAttempt, setSubmittingAttempt] = useState(false);
   const [notice, setNotice] = useState({ type: "info", message: "" });
 
-  useEffect(() => {
-    if (!studentId) {
-      setWeaknesses([]);
-      return;
-    }
-
-    const loadWeaknesses = async () => {
-      setLoading(true);
-      try {
-        const response = await wellnessApi.getWeakestConcepts(studentId, 8);
-        setWeaknesses(response.weakest_concepts || []);
-      } catch (error) {
-        setNotice({ type: "error", message: error.message });
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadWeaknesses();
-  }, [studentId]);
-
-  const refreshWeaknesses = async () => {
-    if (!studentId) return;
-    setLoading(true);
+  const loadWeaknesses = async (targetStudentId = studentId) => {
+    if (!targetStudentId) return;
+    setLoadingWeaknesses(true);
     try {
-      const response = await wellnessApi.getWeakestConcepts(studentId, 8);
+      const response = await wellnessApi.getWeakestConcepts(targetStudentId, 8);
       setWeaknesses(response.weakest_concepts || []);
     } catch (error) {
       setNotice({ type: "error", message: error.message });
     } finally {
-      setLoading(false);
+      setLoadingWeaknesses(false);
     }
   };
+
+  useEffect(() => {
+    if (!studentId) {
+      setWeaknesses([]);
+      setActiveQuestion(null);
+      setStudentAnswer("");
+      setResult(null);
+      return;
+    }
+
+    loadWeaknesses(studentId);
+  }, [studentId]);
 
   const clearStudent = () => {
     setStudentId(null);
     setResult(null);
     setWeaknesses([]);
+    setActiveQuestion(null);
+    setStudentAnswer("");
+    setQuizConcept("");
   };
 
-  const handleChange = (event) => {
-    const { name, value } = event.target;
-    setQuizForm((previous) => ({ ...previous, [name]: value }));
-  };
-
-  const handleSubmit = async (event) => {
-    event.preventDefault();
+  const requestQuizQuestion = async () => {
     if (!studentId) {
       setNotice({ type: "error", message: "Load a student first." });
       return;
     }
 
-    setLoading(true);
+    setLoadingQuestion(true);
     try {
-      const analysis = await wellnessApi.submitQuiz({
-        student_id: studentId,
-        concept_name: quizForm.concept_name,
-        is_correct: quizForm.is_correct === "true" || quizForm.is_correct === true,
-        student_answer: quizForm.student_answer,
-        correct_answer: quizForm.correct_answer,
-      });
-      setResult(analysis);
+      const payload = { student_id: studentId };
+      if (quizConcept.trim()) {
+        payload.concept_name = quizConcept.trim();
+      }
 
-      const updated = await wellnessApi.getWeakestConcepts(studentId, 8);
-      setWeaknesses(updated.weakest_concepts || []);
-      setNotice({ type: "success", message: "Weakness scores updated." });
-      setQuizForm(initialQuizForm);
+      const question = await wellnessApi.getQuizQuestion(payload);
+      setActiveQuestion(question);
+      setStudentAnswer("");
+      setResult(null);
+      setNotice({ type: "success", message: `Quiz question ready for ${question.concept_name}.` });
     } catch (error) {
       setNotice({ type: "error", message: error.message });
     } finally {
-      setLoading(false);
+      setLoadingQuestion(false);
+    }
+  };
+
+  const submitAttempt = async (event) => {
+    event.preventDefault();
+    if (!studentId) {
+      setNotice({ type: "error", message: "Load a student first." });
+      return;
+    }
+    if (!activeQuestion) {
+      setNotice({ type: "error", message: "Generate a quiz question first." });
+      return;
+    }
+    if (!studentAnswer.trim()) {
+      setNotice({ type: "error", message: "Type your answer before submitting." });
+      return;
+    }
+
+    setSubmittingAttempt(true);
+    try {
+      const analysis = await wellnessApi.submitQuizAttempt({
+        student_id: studentId,
+        question_id: activeQuestion.question_id,
+        concept_name: activeQuestion.concept_name,
+        question: activeQuestion.question,
+        student_answer: studentAnswer.trim(),
+        reference_answer: activeQuestion.reference_answer,
+        keywords: activeQuestion.keywords || [],
+      });
+
+      setResult(analysis);
+      await loadWeaknesses(studentId);
+      setNotice({
+        type: "success",
+        message: analysis.is_correct
+          ? "Correct. Weakness score updated automatically."
+          : "Incorrect. Weakness score updated automatically.",
+      });
+    } catch (error) {
+      setNotice({ type: "error", message: error.message });
+    } finally {
+      setSubmittingAttempt(false);
     }
   };
 
   return (
-    <PageShell title="Weakness Analyzer" subtitle="Track concept weaknesses using quiz outcomes.">
+    <PageShell title="Weakness Analyzer" subtitle="Take quick quizzes and track concept weaknesses automatically.">
       <StudentBanner studentId={studentId} onClear={clearStudent} />
       <Notice type={notice.type} message={notice.message} />
 
@@ -110,11 +134,16 @@ export default function WeaknessAnalyzer() {
           <section className="panel chart-panel">
             <div className="section-header-inline">
               <h3>Weakest Concept Graph</h3>
-              <button type="button" className="secondary-btn" onClick={() => refreshWeaknesses()} disabled={loading}>
-                {loading ? "Refreshing..." : "Refresh"}
+              <button
+                type="button"
+                className="secondary-btn"
+                onClick={() => loadWeaknesses(studentId)}
+                disabled={loadingWeaknesses}
+              >
+                {loadingWeaknesses ? "Refreshing..." : "Refresh"}
               </button>
             </div>
-            {weaknesses.length === 0 ? <p>No weakness data yet. Submit one quiz outcome below to start tracking.</p> : null}
+            {weaknesses.length === 0 ? <p>No weakness data yet. Take one quiz below to start tracking.</p> : null}
             <ResponsiveContainer width="100%" height={300}>
               <BarChart data={weaknesses}>
                 <CartesianGrid strokeDasharray="3 3" />
@@ -156,6 +185,60 @@ export default function WeaknessAnalyzer() {
             </table>
           </section>
 
+          <section className="panel form-grid">
+            <h3>Take Quiz</h3>
+            <label>
+              Preferred Concept (optional)
+              <input
+                name="quiz_concept"
+                value={quizConcept}
+                onChange={(event) => setQuizConcept(event.target.value)}
+                placeholder="e.g., machine learning"
+              />
+            </label>
+            <div className="button-row full-width">
+              <button type="button" className="secondary-btn" onClick={requestQuizQuestion} disabled={loadingQuestion}>
+                {loadingQuestion ? "Generating..." : "Get Question"}
+              </button>
+            </div>
+          </section>
+
+          {activeQuestion ? (
+            <form className="panel form-grid" onSubmit={submitAttempt}>
+              <h3>Answer Question</h3>
+              <label>
+                Concept
+                <input name="concept_name" value={activeQuestion.concept_name} readOnly />
+              </label>
+
+              <label className="full-width">
+                Quiz Question
+                <textarea value={activeQuestion.question} rows="3" readOnly />
+              </label>
+
+              <label>
+                Your Answer
+                <textarea
+                  name="student_answer"
+                  value={studentAnswer}
+                  onChange={(event) => setStudentAnswer(event.target.value)}
+                  rows="3"
+                  placeholder="Type your answer here"
+                  required
+                />
+              </label>
+
+              <div className="button-row full-width">
+                <button type="submit" className="primary-btn" disabled={submittingAttempt}>
+                  {submittingAttempt ? "Checking..." : "Submit Answer"}
+                </button>
+                <button type="button" className="secondary-btn" onClick={requestQuizQuestion} disabled={loadingQuestion}>
+                  {loadingQuestion ? "Generating..." : "Next Question"}
+                </button>
+              </div>
+            </form>
+          ) : null}
+
           {result ? (
             <section className="panel">
               <h3>Latest Analysis</h3>
@@ -165,6 +248,9 @@ export default function WeaknessAnalyzer() {
                 </p>
                 <p>
                   <strong>Priority:</strong> {result.learning_priority}
+                </p>
+                <p>
+                  <strong>Result:</strong> {result.is_correct ? "Correct" : "Incorrect"}
                 </p>
                 <p>
                   <strong>Old Score:</strong> {result.old_weakness_score}
@@ -178,58 +264,13 @@ export default function WeaknessAnalyzer() {
                   <strong>Detected Misconception:</strong> {result.misconception_detected}
                 </p>
               ) : null}
+              {activeQuestion ? (
+                <p>
+                  <strong>Reference Answer:</strong> {activeQuestion.reference_answer}
+                </p>
+              ) : null}
             </section>
           ) : null}
-
-          <form className="panel form-grid" onSubmit={handleSubmit}>
-            <h3>Submit Quiz Outcome</h3>
-            <label>
-              Concept
-              <input
-                name="concept_name"
-                value={quizForm.concept_name}
-                onChange={handleChange}
-                placeholder="e.g., backpropagation"
-                required
-              />
-            </label>
-
-            <label>
-              Was the student answer correct?
-              <select name="is_correct" value={String(quizForm.is_correct)} onChange={handleChange}>
-                <option value="false">Incorrect</option>
-                <option value="true">Correct</option>
-              </select>
-            </label>
-
-            <label>
-              Student Answer
-              <textarea
-                name="student_answer"
-                value={quizForm.student_answer}
-                onChange={handleChange}
-                rows="3"
-                placeholder="Student response"
-              />
-            </label>
-
-            <label>
-              Correct Answer
-              <textarea
-                name="correct_answer"
-                value={quizForm.correct_answer}
-                onChange={handleChange}
-                rows="3"
-                placeholder="Reference answer"
-              />
-            </label>
-
-            <div className="button-row full-width">
-              <button type="submit" className="primary-btn" disabled={loading}>
-                {loading ? "Analyzing..." : "Analyze"}
-              </button>
-            </div>
-          </form>
         </>
       )}
     </PageShell>

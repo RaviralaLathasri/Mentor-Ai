@@ -6,7 +6,9 @@ const navItems = [
   { to: "/profile", label: "Profile" },
   { to: "/weakness", label: "Weakness" },
   { to: "/explain", label: "Explain Mistake" },
+  { to: "/resume", label: "Resume Mentor" },
   { to: "/analytics", label: "Analytics" },
+  { to: "/career-roadmap", label: "Career Roadmap" },
 ];
 
 export default function Navbar() {

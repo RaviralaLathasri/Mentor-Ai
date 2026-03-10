@@ -14,7 +14,13 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.schemas import SessionCreate, SessionResponse, StudentContextSnapshot
+from app.schemas import (
+    SessionCreate,
+    SessionResponse,
+    StudentContextSnapshot,
+    StudyPlanRequest,
+    StudyPlanResponse,
+)
 from app.services import AdaptiveLearningService
 
 router = APIRouter(prefix="/api/adaptive", tags=["Adaptive Learning"])
@@ -108,3 +114,31 @@ def get_learning_recommendations(
     except Exception as e:
         print(f"[ERROR] get_learning_recommendations: {str(e)} | student_id={student_id}")
         raise HTTPException(status_code=500, detail="Error generating recommendations")
+
+
+@router.post("/study-plan", response_model=StudyPlanResponse)
+def generate_study_plan(
+    request: StudyPlanRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Generate a personalized daily/weekly study roadmap.
+
+    Inputs:
+    - student profile (goals, confidence, preferred difficulty)
+    - concept weakness scores
+    """
+    try:
+        service = AdaptiveLearningService(db)
+        plan = service.generate_study_plan(
+            student_id=request.student_id,
+            weeks=request.weeks,
+            days_per_week=request.days_per_week,
+            daily_minutes=request.daily_minutes,
+        )
+        return StudyPlanResponse.model_validate(plan)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        print(f"[ERROR] generate_study_plan: {str(e)} | student_id={request.student_id}")
+        raise HTTPException(status_code=500, detail="Error generating study plan")

@@ -6,6 +6,7 @@ Canonical Pydantic contracts for the current FastAPI backend.
 
 from datetime import datetime
 from enum import Enum
+import re
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -106,6 +107,55 @@ class QuizAnswerSubmit(BaseModel):
     explanation: Optional[str] = None
 
 
+class QuizQuestionResponse(BaseModel):
+    question_id: str
+    concept_name: str
+    question: str
+    reference_answer: str
+    keywords: List[str] = Field(default_factory=list)
+
+
+class QuizAttemptSubmit(BaseModel):
+    student_id: int
+    question_id: Optional[str] = None
+    concept_name: str = Field(..., min_length=1, max_length=255)
+    question: str = Field(..., min_length=1, max_length=2000)
+    student_answer: str = Field(..., min_length=1, max_length=4000)
+    reference_answer: str = Field(..., min_length=1, max_length=4000)
+    keywords: List[str] = Field(default_factory=list)
+
+
+class ResumeSectionAnalysis(BaseModel):
+    section_name: str
+    score: float = Field(..., ge=0.0, le=1.0)
+    findings: List[str] = Field(default_factory=list)
+    mentoring_questions: List[str] = Field(default_factory=list)
+
+
+class ResumeIssue(BaseModel):
+    issue_type: str
+    severity: Literal["low", "medium", "high"]
+    section_name: str
+    evidence: str
+    mentoring_question: str
+
+
+class ResumeMentorResponse(BaseModel):
+    file_name: str
+    overall_assessment: str
+    resume_score: int = Field(0, ge=0, le=100)
+    detected_keywords: List[str] = Field(default_factory=list)
+    missing_keywords: List[str] = Field(default_factory=list)
+    detected_sections: List[str] = Field(default_factory=list)
+    missing_sections: List[str] = Field(default_factory=list)
+    improvement_suggestions: List[str] = Field(default_factory=list)
+    strengths: List[str] = Field(default_factory=list)
+    weaknesses: List[str] = Field(default_factory=list)
+    issues: List[ResumeIssue] = Field(default_factory=list)
+    section_analysis: List[ResumeSectionAnalysis] = Field(default_factory=list)
+    mentoring_advice: List[str] = Field(default_factory=list)
+
+
 class WeaknessAnalysisResult(BaseModel):
     concept_name: str
     is_correct: bool
@@ -184,6 +234,197 @@ class StudentContextSnapshot(BaseModel):
     strength_areas: List[str]
     preferred_difficulty: str
     recent_feedback_sentiment: str
+
+
+class StudyPlanRequest(BaseModel):
+    student_id: int
+    weeks: int = Field(default=2, ge=1, le=8)
+    days_per_week: int = Field(default=5, ge=3, le=7)
+    daily_minutes: int = Field(default=60, ge=30, le=240)
+
+
+class StudyPlanDay(BaseModel):
+    day_number: int
+    focus_concept: str
+    objective: str
+    activities: List[str] = Field(default_factory=list)
+    estimated_minutes: int
+
+
+class StudyPlanWeek(BaseModel):
+    week_number: int
+    weekly_focus: str
+    goal_alignment: str
+    days: List[StudyPlanDay] = Field(default_factory=list)
+
+
+class StudyPlanResponse(BaseModel):
+    student_id: int
+    goals: str
+    confidence_level: float
+    preferred_difficulty: str
+    weeks: int
+    days_per_week: int
+    daily_minutes: int
+    key_weaknesses: List[Dict[str, Any]] = Field(default_factory=list)
+    weekly_roadmap: List[StudyPlanWeek] = Field(default_factory=list)
+    guidance: List[str] = Field(default_factory=list)
+
+
+class CareerLevelEnum(str, Enum):
+    BEGINNER = "Beginner"
+    INTERMEDIATE = "Intermediate"
+    ADVANCED = "Advanced"
+
+
+class CareerRoadmapGenerateRequest(BaseModel):
+    role: str = Field(..., min_length=2, max_length=100)
+    duration: str = Field(..., min_length=3, max_length=30)
+    level: CareerLevelEnum
+
+    @field_validator("role")
+    @classmethod
+    def normalize_role(cls, value: str) -> str:
+        return " ".join(value.split())
+
+    @field_validator("duration")
+    @classmethod
+    def validate_duration(cls, value: str) -> str:
+        text = " ".join((value or "").lower().split())
+        match = re.match(r"^(\d+)\s*(week|weeks|month|months)$", text)
+        if not match:
+            raise ValueError("Duration must be like '12 weeks' or '6 months'")
+
+        amount = int(match.group(1))
+        if amount <= 0:
+            raise ValueError("Duration must be greater than zero")
+
+        unit = match.group(2)
+        if unit.startswith("week") and amount > 104:
+            raise ValueError("Weeks duration is too large (max 104)")
+        if unit.startswith("month") and amount > 24:
+            raise ValueError("Months duration is too large (max 24)")
+
+        normalized_unit = "weeks" if unit.startswith("week") else "months"
+        return f"{amount} {normalized_unit}"
+
+
+class CareerRoadmapPhase(BaseModel):
+    phase_title: str
+    duration_label: str
+    learning_goals: List[str] = Field(default_factory=list)
+    milestones: List[str] = Field(default_factory=list)
+
+
+class CareerRoadmapResource(BaseModel):
+    title: str
+    platform: str
+    link: str
+    description: str
+
+
+class CareerRoadmapProjects(BaseModel):
+    beginner: List[str] = Field(default_factory=list)
+    intermediate: List[str] = Field(default_factory=list)
+    advanced: List[str] = Field(default_factory=list)
+
+
+class CareerRoadmapInterviewPrep(BaseModel):
+    important_topics: List[str] = Field(default_factory=list)
+    practice_platforms: List[str] = Field(default_factory=list)
+    sample_questions: List[str] = Field(default_factory=list)
+
+
+class CareerRoadmapResponse(BaseModel):
+    role: str
+    level: CareerLevelEnum
+    duration: str
+    timeline: List[CareerRoadmapPhase] = Field(default_factory=list)
+    skills_to_master: List[str] = Field(default_factory=list)
+    tools: List[str] = Field(default_factory=list)
+    courses: List[CareerRoadmapResource] = Field(default_factory=list)
+    youtube_resources: List[CareerRoadmapResource] = Field(default_factory=list)
+    documentation: List[CareerRoadmapResource] = Field(default_factory=list)
+    projects: CareerRoadmapProjects
+    certifications: List[str] = Field(default_factory=list)
+    interview_preparation: CareerRoadmapInterviewPrep
+    portfolio_tips: List[str] = Field(default_factory=list)
+    career_advice: List[str] = Field(default_factory=list)
+
+
+class InterviewTypeEnum(str, Enum):
+    BEHAVIORAL = "behavioral"
+    TECHNICAL = "technical"
+    MIXED = "mixed"
+
+
+class MockInterviewRequest(BaseModel):
+    student_id: int
+    role: str = Field(..., min_length=2, max_length=100)
+    duration: Optional[str] = Field(default=None, max_length=30)
+    level: CareerLevelEnum = CareerLevelEnum.BEGINNER
+    interview_type: InterviewTypeEnum = InterviewTypeEnum.MIXED
+    question_count: int = Field(default=5, ge=3, le=10)
+    focus_topics: List[str] = Field(default_factory=list)
+    candidate_summary: Optional[str] = Field(default=None, max_length=1000)
+    answers: List[str] = Field(default_factory=list)
+
+    @field_validator("role")
+    @classmethod
+    def normalize_role_for_interview(cls, value: str) -> str:
+        return " ".join(value.split())
+
+    @field_validator("answers", mode="before")
+    @classmethod
+    def normalize_answers(cls, value):
+        if value is None:
+            return []
+        if isinstance(value, str):
+            return [value]
+        return value
+
+
+class MockInterviewTurn(BaseModel):
+    question_number: int
+    question_type: InterviewTypeEnum
+    question: str
+    focus_area: str
+    candidate_answer: str
+    score: float = Field(..., ge=0.0, le=100.0)
+    feedback: str
+    ideal_answer: str
+
+
+class MockInterviewResponse(BaseModel):
+    session_id: str
+    student_id: int
+    role: str
+    level: CareerLevelEnum
+    duration: Optional[str] = None
+    interview_type: InterviewTypeEnum
+    question_count: int
+    overall_score: float = Field(..., ge=0.0, le=100.0)
+    transcript: List[MockInterviewTurn] = Field(default_factory=list)
+    strengths: List[str] = Field(default_factory=list)
+    improvement_areas: List[str] = Field(default_factory=list)
+    actionable_tips: List[str] = Field(default_factory=list)
+    playback: Dict[str, str] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class MockInterviewHistoryItem(BaseModel):
+    session_id: str
+    role: str
+    level: CareerLevelEnum
+    interview_type: InterviewTypeEnum
+    overall_score: float = Field(..., ge=0.0, le=100.0)
+    question_count: int
+    created_at: datetime
+
+
+class MockInterviewHistoryResponse(BaseModel):
+    student_id: int
+    sessions: List[MockInterviewHistoryItem] = Field(default_factory=list)
 
 
 class ExplainMistakeRequest(BaseModel):

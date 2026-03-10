@@ -28,7 +28,21 @@ from app.database import (
     StudentProfile,
     WeaknessScore,
 )
-from app.schemas import AdaptationUpdate, MistakeExplanation, StudentContextSnapshot, WeaknessAnalysisResult
+from app.schemas import (
+    AdaptationUpdate,
+    MistakeExplanation,
+    ResumeIssue,
+    ResumeMentorResponse,
+    ResumeSectionAnalysis,
+    StudentContextSnapshot,
+    WeaknessAnalysisResult,
+)
+from app.services.resume_insights import (
+    AI_DATA_KEYWORDS,
+    calculate_resume_score,
+    improvement_suggestions,
+    keyword_gap_analysis,
+)
 from app.utils.openai_client import get_openai_client
 
 
@@ -131,13 +145,318 @@ class StudentProfileService:
 class WeaknessAnalyzerService:
     """Weakness-first analyzer and explain-my-mistake logic."""
 
+    _QUIZ_QUESTION_BANK: Dict[str, List[Dict[str, object]]] = {
+        "machine learning": [
+            {
+                "question": "What is overfitting in machine learning, and name one way to reduce it.",
+                "reference_answer": (
+                    "Overfitting is when a model memorizes training noise and fails to generalize to unseen data. "
+                    "It can be reduced using regularization, cross-validation, early stopping, or more data."
+                ),
+                "keywords": ["overfitting", "generalize", "regularization", "cross-validation"],
+            },
+            {
+                "question": "Why do we split data into train, validation, and test sets?",
+                "reference_answer": (
+                    "The train set fits the model, validation tunes hyperparameters, and the test set estimates "
+                    "final generalization on unseen data."
+                ),
+                "keywords": ["train", "validation", "test", "generalization"],
+            },
+        ],
+        "gradient descent": [
+            {
+                "question": "Why does gradient descent use the negative gradient direction?",
+                "reference_answer": (
+                    "The gradient points to steepest increase in loss, so moving in the negative gradient direction "
+                    "decreases loss most quickly for a small step."
+                ),
+                "keywords": ["negative gradient", "decrease loss", "steepest increase"],
+            },
+            {
+                "question": "What happens if the learning rate is too high in gradient descent?",
+                "reference_answer": (
+                    "If learning rate is too high, updates overshoot minima and training can oscillate or diverge."
+                ),
+                "keywords": ["learning rate", "overshoot", "oscillate", "diverge"],
+            },
+        ],
+        "backpropagation": [
+            {
+                "question": "What is backpropagation and why is the chain rule needed?",
+                "reference_answer": (
+                    "Backpropagation computes gradients of loss with respect to each weight. "
+                    "The chain rule propagates derivatives through layers."
+                ),
+                "keywords": ["backpropagation", "gradients", "loss", "chain rule", "layers"],
+            },
+            {
+                "question": "Why can vanishing gradients hurt deep neural network training?",
+                "reference_answer": (
+                    "When gradients become very small in early layers, those weights barely update, "
+                    "so learning slows or stalls."
+                ),
+                "keywords": ["vanishing gradients", "small gradients", "early layers", "slow learning"],
+            },
+        ],
+        "data analysis": [
+            {
+                "question": "What is the difference between descriptive and inferential statistics?",
+                "reference_answer": (
+                    "Descriptive statistics summarize observed data, while inferential statistics draw conclusions "
+                    "about a population using samples."
+                ),
+                "keywords": ["descriptive", "inferential", "summarize", "population", "sample"],
+            },
+            {
+                "question": "Why is data cleaning important before analysis?",
+                "reference_answer": (
+                    "Cleaning handles missing values, duplicates, and inconsistencies so analysis results are reliable."
+                ),
+                "keywords": ["data cleaning", "missing values", "duplicates", "reliable"],
+            },
+        ],
+        "data engineering": [
+            {
+                "question": "What is ETL in data engineering?",
+                "reference_answer": (
+                    "ETL means Extract, Transform, and Load: collect data from sources, clean/reshape it, "
+                    "then load it into a warehouse or lake for use."
+                ),
+                "keywords": ["extract", "transform", "load", "warehouse", "data lake"],
+            },
+            {
+                "question": "Why is schema validation important in data pipelines?",
+                "reference_answer": (
+                    "Schema validation catches incompatible or malformed records early, preventing downstream failures "
+                    "and poor data quality."
+                ),
+                "keywords": ["schema validation", "data quality", "pipeline", "downstream failures"],
+            },
+        ],
+        "sql": [
+            {
+                "question": "What does a SQL JOIN do?",
+                "reference_answer": (
+                    "A JOIN combines rows from two tables using a related key so you can query connected data."
+                ),
+                "keywords": ["join", "two tables", "related key", "combine rows"],
+            },
+            {
+                "question": "When would you use GROUP BY in SQL?",
+                "reference_answer": (
+                    "Use GROUP BY to aggregate rows by one or more columns, for example count or sum per category."
+                ),
+                "keywords": ["group by", "aggregate", "count", "sum", "category"],
+            },
+        ],
+    }
+
+    _CONCEPT_ALIAS_MAP: Dict[str, str] = {
+        "ml": "machine learning",
+        "ai": "machine learning",
+        "data analyst": "data analysis",
+        "data analytics": "data analysis",
+        "analytics": "data analysis",
+        "etl": "data engineering",
+        "extract transform load": "data engineering",
+        "extract, transform, load": "data engineering",
+        "data pipelines": "data engineering",
+        "pipeline": "data engineering",
+        "pipelines": "data engineering",
+        "sql query": "sql",
+    }
+
     def __init__(self, db: Session):
         self.db = db
 
     @staticmethod
     def _normalize_concept(concept_name: str) -> str:
         value = (concept_name or "general").strip().lower()
+        value = re.sub(r"[^a-z0-9\s\-/+]", " ", value)
+        value = re.sub(r"\s+", " ", value).strip()
+        if not value:
+            return "general"
+
+        if value in WeaknessAnalyzerService._CONCEPT_ALIAS_MAP:
+            return WeaknessAnalyzerService._CONCEPT_ALIAS_MAP[value]
+
+        noisy_markers = ["current level", "timeline", "beginner", "intermediate", "advanced"]
+        if any(marker in value for marker in noisy_markers) and "machine learning" in value:
+            return "machine learning"
+        if any(marker in value for marker in noisy_markers) and "data analysis" in value:
+            return "data analysis"
+        if any(marker in value for marker in noisy_markers) and "data engineering" in value:
+            return "data engineering"
+
         return value or "general"
+
+    def _pick_quiz_concept(self, student_id: int, concept_name: Optional[str] = None) -> str:
+        bank = self._QUIZ_QUESTION_BANK
+        if concept_name:
+            normalized = self._normalize_concept(concept_name)
+            if normalized in bank:
+                return normalized
+
+        for weakness in self.get_weakest_concepts(student_id, limit=8):
+            normalized = self._normalize_concept(weakness.concept_name)
+            if normalized in bank:
+                return normalized
+
+        return random.choice(list(bank.keys()))
+
+    def generate_quiz_question(self, student_id: int, concept_name: Optional[str] = None) -> Dict:
+        student_exists = self.db.query(Student).filter(Student.id == student_id).first()
+        if not student_exists:
+            raise ValueError(f"Student {student_id} not found")
+
+        concept_key = self._pick_quiz_concept(student_id=student_id, concept_name=concept_name)
+        bank_items = self._QUIZ_QUESTION_BANK.get(concept_key, self._QUIZ_QUESTION_BANK["machine learning"])
+        selected = random.choice(bank_items)
+        return {
+            "question_id": str(uuid.uuid4()),
+            "concept_name": concept_key,
+            "question": str(selected["question"]),
+            "reference_answer": str(selected["reference_answer"]),
+            "keywords": [str(item).strip().lower() for item in selected.get("keywords", [])],
+        }
+
+    @staticmethod
+    def _normalize_answer_text(value: str) -> str:
+        text = (value or "").strip().lower()
+        text = re.sub(r"[^a-z0-9\s]", " ", text)
+        return re.sub(r"\s+", " ", text).strip()
+
+    @staticmethod
+    def _answer_token_set(value: str) -> set:
+        text = WeaknessAnalyzerService._normalize_answer_text(value)
+        if not text:
+            return set()
+        stop_words = {
+            "the",
+            "and",
+            "for",
+            "with",
+            "that",
+            "this",
+            "from",
+            "into",
+            "your",
+            "you",
+            "are",
+            "was",
+            "were",
+            "have",
+            "has",
+            "had",
+            "its",
+            "can",
+            "could",
+            "would",
+            "should",
+            "about",
+            "what",
+            "when",
+            "where",
+            "which",
+            "why",
+            "how",
+            "then",
+            "than",
+            "them",
+            "they",
+            "their",
+            "there",
+            "here",
+            "also",
+            "just",
+            "very",
+            "more",
+            "most",
+            "much",
+            "many",
+            "like",
+            "only",
+            "been",
+            "being",
+            "because",
+            "through",
+            "each",
+        }
+        tokens = [token for token in text.split() if len(token) > 2 and token not in stop_words]
+        return set(tokens)
+
+    @staticmethod
+    def _keyword_match_ratio(student_answer: str, keywords: Optional[List[str]] = None) -> float:
+        if not keywords:
+            return 0.0
+        student_text = WeaknessAnalyzerService._normalize_answer_text(student_answer)
+        if not student_text:
+            return 0.0
+
+        normalized_keywords = [WeaknessAnalyzerService._normalize_answer_text(item) for item in keywords]
+        valid_keywords = [item for item in normalized_keywords if item]
+        if not valid_keywords:
+            return 0.0
+
+        matched = sum(1 for keyword in valid_keywords if keyword in student_text)
+        return matched / len(valid_keywords)
+
+    @staticmethod
+    def _reference_overlap_ratio(student_answer: str, reference_answer: str) -> float:
+        student_tokens = WeaknessAnalyzerService._answer_token_set(student_answer)
+        reference_tokens = WeaknessAnalyzerService._answer_token_set(reference_answer)
+        if not student_tokens or not reference_tokens:
+            return 0.0
+        return len(student_tokens & reference_tokens) / len(reference_tokens)
+
+    def evaluate_quiz_answer(
+        self,
+        concept_name: str,
+        student_answer: str,
+        reference_answer: str,
+        keywords: Optional[List[str]] = None,
+    ) -> bool:
+        student_text = self._normalize_answer_text(student_answer)
+        reference_text = self._normalize_answer_text(reference_answer)
+        if not student_text:
+            return False
+        if student_text == reference_text:
+            return True
+
+        keyword_ratio = self._keyword_match_ratio(student_answer, keywords)
+        overlap_ratio = self._reference_overlap_ratio(student_answer, reference_answer)
+
+        concept_key = self._normalize_concept(concept_name)
+        strict_concepts = {"gradient descent", "backpropagation", "sql"}
+        if concept_key in strict_concepts:
+            return keyword_ratio >= 0.5 or (keyword_ratio >= 0.34 and overlap_ratio >= 0.45)
+
+        return keyword_ratio >= 0.5 or overlap_ratio >= 0.55 or (keyword_ratio >= 0.34 and overlap_ratio >= 0.45)
+
+    def analyze_generated_quiz_attempt(
+        self,
+        student_id: int,
+        concept_name: str,
+        question: str,
+        student_answer: str,
+        reference_answer: str,
+        keywords: Optional[List[str]] = None,
+    ) -> WeaknessAnalysisResult:
+        del question  # question text is present for audit/input symmetry; scoring relies on concept + reference.
+        is_correct = self.evaluate_quiz_answer(
+            concept_name=concept_name,
+            student_answer=student_answer,
+            reference_answer=reference_answer,
+            keywords=keywords,
+        )
+        return self.analyze_quiz_result(
+            student_id=student_id,
+            concept_name=concept_name,
+            is_correct=is_correct,
+            student_answer=student_answer,
+            correct_answer=reference_answer,
+        )
 
     def get_or_create_weakness(self, student_id: int, concept_name: str) -> WeaknessScore:
         concept_key = self._normalize_concept(concept_name)
@@ -284,6 +603,392 @@ class WeaknessAnalyzerService:
         return f"What evidence would convince you that your current reasoning in {concept} is correct?"
 
 
+class ResumeMentorService:
+    """Resume upload analyzer with Socratic mentoring guidance."""
+
+    _SECTION_ALIASES: Dict[str, List[str]] = {
+        "summary": ["summary", "profile", "objective", "about me"],
+        "experience": ["experience", "work experience", "employment", "professional experience", "internship"],
+        "projects": ["projects", "project experience", "academic projects"],
+        "skills": ["skills", "technical skills", "core skills", "technologies", "tooling"],
+        "education": ["education", "academic background", "qualifications"],
+        "certifications": ["certifications", "certificates", "licenses"],
+    }
+
+    _REQUIRED_SECTIONS: List[str] = ["summary", "experience", "projects", "skills", "education"]
+    _ACTION_VERBS = {
+        "built",
+        "developed",
+        "improved",
+        "optimized",
+        "designed",
+        "implemented",
+        "delivered",
+        "led",
+        "created",
+        "reduced",
+        "increased",
+        "automated",
+        "deployed",
+        "analyzed",
+        "achieved",
+    }
+
+    def __init__(self, db: Session):
+        self.db = db
+
+    @staticmethod
+    def _safe_decode(raw: bytes) -> str:
+        for encoding in ("utf-8", "utf-16", "latin-1"):
+            try:
+                return raw.decode(encoding)
+            except Exception:
+                continue
+        return raw.decode("utf-8", errors="ignore")
+
+    def _extract_text(self, file_name: str, raw_bytes: bytes) -> str:
+        lower_name = (file_name or "").lower()
+        if lower_name.endswith(".txt") or lower_name.endswith(".md"):
+            return self._safe_decode(raw_bytes)
+
+        if lower_name.endswith(".pdf"):
+            try:
+                from pypdf import PdfReader  # type: ignore
+            except Exception as e:
+                raise ValueError("PDF parsing requires `pypdf`. Add it to requirements.") from e
+
+            from io import BytesIO
+
+            reader = PdfReader(BytesIO(raw_bytes))
+            pages = [page.extract_text() or "" for page in reader.pages]
+            return "\n".join(pages)
+
+        if lower_name.endswith(".docx"):
+            try:
+                from docx import Document  # type: ignore
+            except Exception as e:
+                raise ValueError("DOCX parsing requires `python-docx`. Add it to requirements.") from e
+
+            from io import BytesIO
+
+            document = Document(BytesIO(raw_bytes))
+            return "\n".join([paragraph.text for paragraph in document.paragraphs])
+
+        raise ValueError("Unsupported file type. Upload .pdf, .docx, .txt, or .md.")
+
+    @classmethod
+    def _normalize_line(cls, line: str) -> str:
+        normalized = re.sub(r"[^a-z0-9\s]", " ", (line or "").strip().lower())
+        return re.sub(r"\s+", " ", normalized).strip()
+
+    @classmethod
+    def _match_section_name(cls, line: str) -> Optional[str]:
+        normalized = cls._normalize_line(line)
+        if not normalized:
+            return None
+        for canonical, aliases in cls._SECTION_ALIASES.items():
+            for alias in aliases:
+                if normalized == alias or normalized.startswith(f"{alias} "):
+                    return canonical
+        return None
+
+    @classmethod
+    def _split_sections(cls, text: str) -> Dict[str, str]:
+        lines = [line.strip() for line in (text or "").splitlines()]
+        sections: Dict[str, List[str]] = {}
+        active_section = "general"
+        sections.setdefault(active_section, [])
+
+        for line in lines:
+            if not line:
+                continue
+            section_name = cls._match_section_name(line.rstrip(":"))
+            if section_name:
+                active_section = section_name
+                sections.setdefault(active_section, [])
+                continue
+            sections.setdefault(active_section, []).append(line)
+
+        return {name: "\n".join(content).strip() for name, content in sections.items() if "\n".join(content).strip()}
+
+    @staticmethod
+    def _is_bullet(line: str) -> bool:
+        stripped = (line or "").strip()
+        return bool(re.match(r"^(\-|\*|•|\d+\.)\s+", stripped))
+
+    @staticmethod
+    def _has_number(text: str) -> bool:
+        return bool(re.search(r"\d", text or ""))
+
+    def _analyze_section(self, section_name: str, content: str) -> Tuple[ResumeSectionAnalysis, List[ResumeIssue]]:
+        text = (content or "").strip()
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        score = 1.0
+        findings: List[str] = []
+        mentoring_questions: List[str] = []
+        issues: List[ResumeIssue] = []
+
+        if len(text) < 80 and section_name in self._REQUIRED_SECTIONS:
+            score -= 0.3
+            finding = "Section is too brief and lacks enough detail."
+            findings.append(finding)
+            mentoring_questions.append(f"What concrete details can you add to strengthen your {section_name} section?")
+            issues.append(
+                ResumeIssue(
+                    issue_type="poor structure",
+                    severity="medium",
+                    section_name=section_name,
+                    evidence=finding,
+                    mentoring_question=mentoring_questions[-1],
+                )
+            )
+
+        if section_name in {"experience", "projects"}:
+            bullets = [line for line in lines if self._is_bullet(line)]
+            if not bullets:
+                score -= 0.3
+                evidence = "No bullet points found for achievements."
+                question = "Can you rewrite your work into bullet points with action + impact?"
+                findings.append(evidence)
+                mentoring_questions.append(question)
+                issues.append(
+                    ResumeIssue(
+                        issue_type="weak bullet points",
+                        severity="high",
+                        section_name=section_name,
+                        evidence=evidence,
+                        mentoring_question=question,
+                    )
+                )
+            else:
+                quantified = [item for item in bullets if self._has_number(item)]
+                if not quantified:
+                    score -= 0.3
+                    evidence = "Bullets describe tasks, but none quantify impact."
+                    question = "Can you quantify impact for each bullet with metrics like %, time saved, or users affected?"
+                    findings.append(evidence)
+                    mentoring_questions.append(question)
+                    issues.append(
+                        ResumeIssue(
+                            issue_type="unclear achievements",
+                            severity="high",
+                            section_name=section_name,
+                            evidence=evidence,
+                            mentoring_question=question,
+                        )
+                    )
+
+                weak_bullets = []
+                for item in bullets:
+                    normalized = self._normalize_line(item)
+                    if not any(f" {verb} " in f" {normalized} " for verb in self._ACTION_VERBS):
+                        weak_bullets.append(item)
+                if weak_bullets:
+                    score -= 0.15
+                    evidence = "Some bullets start without strong action verbs."
+                    question = "How can you start each bullet with a strong action verb like built, improved, or optimized?"
+                    findings.append(evidence)
+                    mentoring_questions.append(question)
+                    issues.append(
+                        ResumeIssue(
+                            issue_type="weak bullet points",
+                            severity="medium",
+                            section_name=section_name,
+                            evidence=evidence,
+                            mentoring_question=question,
+                        )
+                    )
+
+        if section_name == "skills":
+            tokens = re.split(r"[,/\n|]", text)
+            unique_skills = [token.strip() for token in tokens if token.strip()]
+            if len(unique_skills) < 6:
+                score -= 0.35
+                evidence = "Skills section appears too short for a technical resume."
+                question = "Which core tools, languages, and frameworks are missing that match your target role?"
+                findings.append(evidence)
+                mentoring_questions.append(question)
+                issues.append(
+                    ResumeIssue(
+                        issue_type="missing skills",
+                        severity="high",
+                        section_name=section_name,
+                        evidence=evidence,
+                        mentoring_question=question,
+                    )
+                )
+
+        if section_name == "summary":
+            lower = text.lower()
+            generic_markers = ["hardworking", "passionate", "seeking opportunity", "quick learner"]
+            if any(marker in lower for marker in generic_markers):
+                score -= 0.2
+                evidence = "Summary uses generic phrases without role-specific evidence."
+                question = "Can you make the summary role-specific with one measurable achievement?"
+                findings.append(evidence)
+                mentoring_questions.append(question)
+                issues.append(
+                    ResumeIssue(
+                        issue_type="poor structure",
+                        severity="medium",
+                        section_name=section_name,
+                        evidence=evidence,
+                        mentoring_question=question,
+                    )
+                )
+
+        if section_name == "education":
+            if not re.search(r"(19|20)\d{2}", text):
+                score -= 0.15
+                evidence = "Education section has no visible graduation year."
+                question = "Can you add graduation year and degree details for clarity?"
+                findings.append(evidence)
+                mentoring_questions.append(question)
+                issues.append(
+                    ResumeIssue(
+                        issue_type="poor structure",
+                        severity="low",
+                        section_name=section_name,
+                        evidence=evidence,
+                        mentoring_question=question,
+                    )
+                )
+
+        score = max(0.0, min(1.0, round(score, 2)))
+        if not findings:
+            findings.append("Section is reasonably clear.")
+            mentoring_questions.append(f"What one improvement would make this {section_name} section even stronger?")
+
+        return (
+            ResumeSectionAnalysis(
+                section_name=section_name,
+                score=score,
+                findings=findings,
+                mentoring_questions=mentoring_questions,
+            ),
+            issues,
+        )
+
+    @classmethod
+    def _missing_sections(cls, sections: Dict[str, str]) -> List[str]:
+        return [name for name in cls._REQUIRED_SECTIONS if not sections.get(name)]
+
+    @staticmethod
+    def _overall_assessment(avg_score: float, issue_count: int, missing_count: int) -> str:
+        if missing_count >= 2 or avg_score < 0.45:
+            return "Resume needs major improvement before applying."
+        if issue_count >= 4 or avg_score < 0.7:
+            return "Resume is promising but needs targeted improvements."
+        return "Resume is solid; refine impact statements to stand out."
+
+    def analyze_resume(self, file_name: str, raw_bytes: bytes) -> ResumeMentorResponse:
+        if not raw_bytes:
+            raise ValueError("Uploaded file is empty.")
+        if len(raw_bytes) > 6 * 1024 * 1024:
+            raise ValueError("File too large. Please upload a file up to 6 MB.")
+
+        resume_text = self._extract_text(file_name=file_name, raw_bytes=raw_bytes)
+        if len((resume_text or "").strip()) < 80:
+            raise ValueError("Could not extract enough resume content. Please upload a clearer file.")
+
+        sections = self._split_sections(resume_text)
+        missing_sections = self._missing_sections(sections)
+
+        section_analysis: List[ResumeSectionAnalysis] = []
+        issues: List[ResumeIssue] = []
+        strengths: List[str] = []
+
+        for section_name, content in sections.items():
+            analysis, section_issues = self._analyze_section(section_name, content)
+            section_analysis.append(analysis)
+            issues.extend(section_issues)
+
+            if analysis.score >= 0.8 and section_name in self._REQUIRED_SECTIONS:
+                strengths.append(f"{section_name.title()} section is clear and reasonably detailed.")
+
+            if section_name in {"experience", "projects"}:
+                bullet_lines = [line for line in content.splitlines() if self._is_bullet(line)]
+                quantified_lines = [line for line in bullet_lines if self._has_number(line)]
+                if quantified_lines:
+                    strengths.append(f"{section_name.title()} includes measurable impact in some bullets.")
+
+        for section_name in missing_sections:
+            issues.append(
+                ResumeIssue(
+                    issue_type="poor structure",
+                    severity="high",
+                    section_name=section_name,
+                    evidence=f"Missing expected section: {section_name}.",
+                    mentoring_question=f"How will you add a concise {section_name} section to improve resume structure?",
+                )
+            )
+
+        if missing_sections:
+            strengths = strengths or ["Resume content exists, but structure is incomplete."]
+
+        weaknesses = [f"{issue.issue_type} in {issue.section_name}: {issue.evidence}" for issue in issues[:10]]
+
+        unique_questions = []
+        seen = set()
+        for issue in issues:
+            question = issue.mentoring_question.strip()
+            if question and question not in seen:
+                unique_questions.append(question)
+                seen.add(question)
+            if len(unique_questions) >= 8:
+                break
+
+        if not unique_questions:
+            unique_questions = [
+                "What role are you targeting, and which achievements best prove fit for that role?",
+                "Can you quantify one project outcome with a measurable result?",
+            ]
+
+        average_score = round(
+            sum(item.score for item in section_analysis) / max(1, len(section_analysis)),
+            2,
+        )
+        overall = self._overall_assessment(
+            avg_score=average_score,
+            issue_count=len(issues),
+            missing_count=len(missing_sections),
+        )
+
+        detected_keywords, missing_keywords = keyword_gap_analysis(
+            resume_text=resume_text,
+            important_keywords=AI_DATA_KEYWORDS,
+        )
+        score_breakdown = calculate_resume_score(
+            resume_text=resume_text,
+            sections=sections,
+            detected_keywords=detected_keywords,
+            important_keywords=AI_DATA_KEYWORDS,
+        )
+        suggestions = improvement_suggestions(
+            resume_text=resume_text,
+            sections=sections,
+            missing_sections=missing_sections,
+            missing_keywords=missing_keywords,
+            score=score_breakdown,
+        )
+
+        return ResumeMentorResponse(
+            file_name=file_name,
+            overall_assessment=overall,
+            resume_score=score_breakdown.total,
+            detected_keywords=detected_keywords,
+            missing_keywords=missing_keywords,
+            detected_sections=sorted(list(sections.keys())),
+            missing_sections=missing_sections,
+            improvement_suggestions=suggestions,
+            strengths=strengths[:8],
+            weaknesses=weaknesses[:10],
+            issues=issues[:12],
+            section_analysis=section_analysis,
+            mentoring_advice=unique_questions,
+        )
+
+
 class MentorAIService:
     """Generate adaptive Socratic mentor responses."""
     _llm_backoff_until: float = 0.0
@@ -304,10 +1009,19 @@ class MentorAIService:
         if not profile:
             raise ValueError(f"Profile not found for student {student_id}")
 
+        latest_response = self._latest_response(student_id)
+        is_follow_up_turn = self._is_follow_up_turn(query=query, latest_response=latest_response)
+
         target_concept = self._resolve_target_concept(
             student_id=student_id,
             query=query,
             focus_concept=focus_concept,
+        )
+        target_concept = self._carry_forward_concept_if_needed(
+            query=query,
+            resolved_concept=target_concept,
+            latest_response=latest_response,
+            is_follow_up_turn=is_follow_up_turn,
         )
         weakness = self.weakness_service.get_or_create_weakness(student_id, target_concept)
 
@@ -325,6 +1039,15 @@ class MentorAIService:
             concept=target_concept,
             style=explanation_style,
             context=context or profile.learning_style_summary,
+            latest_response=latest_response,
+            is_follow_up_turn=is_follow_up_turn,
+        )
+        response_text = self._avoid_repetitive_reply(
+            query=query,
+            concept=target_concept,
+            response_text=response_text,
+            latest_response=latest_response,
+            is_follow_up_turn=is_follow_up_turn,
         )
         follow_up = self._generate_guiding_question(target_concept, explanation_style)
 
@@ -501,6 +1224,19 @@ class MentorAIService:
             "python": ["python", "list", "dict", "function", "class"],
             "sql": ["sql", "join", "select", "where", "group by"],
             "data analysis": ["data analyst", "data analysis", "analysis", "dashboard", "kpi", "analytics", "bi"],
+            "data engineering": [
+                "data engineering",
+                "etl",
+                "extract transform load",
+                "extract, transform, load",
+                "data pipeline",
+                "data pipelines",
+                "data warehouse",
+                "data lake",
+                "orchestration",
+                "airflow",
+                "spark",
+            ],
             "data structures": [
                 "data structure",
                 "array",
@@ -526,6 +1262,187 @@ class MentorAIService:
                 best = concept
                 best_hits = hits
         return best
+
+    def _latest_response(self, student_id: int) -> Optional[MentorResponse]:
+        return (
+            self.db.query(MentorResponse)
+            .filter(MentorResponse.student_id == student_id)
+            .order_by(desc(MentorResponse.created_at))
+            .first()
+        )
+
+    @staticmethod
+    def _content_tokens(text: str) -> set:
+        raw_tokens = re.findall(r"[a-z0-9]+", (text or "").lower())
+        stop_words = {
+            "the",
+            "and",
+            "for",
+            "with",
+            "that",
+            "this",
+            "from",
+            "into",
+            "your",
+            "you",
+            "are",
+            "was",
+            "were",
+            "have",
+            "has",
+            "had",
+            "its",
+            "can",
+            "could",
+            "would",
+            "should",
+            "about",
+            "what",
+            "when",
+            "where",
+            "which",
+            "why",
+            "how",
+            "then",
+            "than",
+            "them",
+            "they",
+            "their",
+            "there",
+            "here",
+            "also",
+            "just",
+            "very",
+            "more",
+            "most",
+            "much",
+            "many",
+            "like",
+            "only",
+            "been",
+            "being",
+            "because",
+            "through",
+            "each",
+            "step",
+        }
+        return {token for token in raw_tokens if len(token) > 2 and token not in stop_words}
+
+    @staticmethod
+    def _token_overlap_ratio(text_a: str, text_b: str) -> float:
+        tokens_a = MentorAIService._content_tokens(text_a)
+        tokens_b = MentorAIService._content_tokens(text_b)
+        if not tokens_a or not tokens_b:
+            return 0.0
+        return len(tokens_a & tokens_b) / max(1, len(tokens_a))
+
+    @staticmethod
+    def _jaccard_similarity(text_a: str, text_b: str) -> float:
+        tokens_a = MentorAIService._content_tokens(text_a)
+        tokens_b = MentorAIService._content_tokens(text_b)
+        union = tokens_a | tokens_b
+        if not union:
+            return 0.0
+        return len(tokens_a & tokens_b) / len(union)
+
+    def _is_follow_up_turn(self, query: str, latest_response: Optional[MentorResponse]) -> bool:
+        if not latest_response:
+            return False
+
+        query_l = (query or "").strip().lower()
+        if not query_l or "?" in query_l:
+            return False
+
+        token_count = len(query_l.split())
+        if token_count == 0 or token_count > 30:
+            return False
+
+        previous_concept = (latest_response.target_concept or "").lower()
+        mentions_previous_concept = bool(
+            previous_concept and previous_concept != "general" and previous_concept in query_l
+        )
+        reflective_phrases = [
+            "i think",
+            "i guess",
+            "it means",
+            "so it",
+            "from my understanding",
+            "my understanding",
+            "basically",
+            "in short",
+            "it is",
+            "this is",
+        ]
+        sounds_like_reflection = any(phrase in query_l for phrase in reflective_phrases)
+        overlap_with_previous = self._token_overlap_ratio(query_l, latest_response.response or "") >= 0.35
+        overlap_with_previous_query = self._token_overlap_ratio(query_l, latest_response.query or "") >= 0.4
+
+        return (
+            mentions_previous_concept
+            or sounds_like_reflection
+            or overlap_with_previous
+            or overlap_with_previous_query
+        )
+
+    def _carry_forward_concept_if_needed(
+        self,
+        query: str,
+        resolved_concept: str,
+        latest_response: Optional[MentorResponse],
+        is_follow_up_turn: bool,
+    ) -> str:
+        if resolved_concept and resolved_concept != "general":
+            return resolved_concept
+        if not latest_response:
+            return resolved_concept
+
+        previous_concept = (latest_response.target_concept or "").strip()
+        if not previous_concept or previous_concept == "general":
+            return resolved_concept
+
+        if is_follow_up_turn:
+            return previous_concept
+
+        overlap_with_previous_query = self._token_overlap_ratio(query, latest_response.query or "")
+        if overlap_with_previous_query >= 0.5:
+            return previous_concept
+        return resolved_concept
+
+    def _avoid_repetitive_reply(
+        self,
+        query: str,
+        concept: str,
+        response_text: str,
+        latest_response: Optional[MentorResponse],
+        is_follow_up_turn: bool,
+    ) -> str:
+        if not response_text or not latest_response or not latest_response.response:
+            return response_text
+
+        similarity = self._jaccard_similarity(response_text, latest_response.response)
+        threshold = 0.55 if is_follow_up_turn else 0.82
+        if similarity < threshold:
+            return response_text
+
+        concept_label = concept if concept and concept != "general" else (latest_response.target_concept or "this topic")
+        if concept_label == "data engineering":
+            return (
+                "Good follow-up. You already captured the ETL idea.\n"
+                "Now push one level deeper:\n"
+                "1. Why transform before load (quality checks, schema mapping, deduplication).\n"
+                "2. Where the data lands (warehouse/lake) and how success is validated.\n"
+                "3. One real tool per stage (for example, Airflow + Spark + BigQuery/Snowflake).\n\n"
+                "Your turn: for event logs with missing timestamps, what transformation would you apply before loading?"
+            )
+
+        return (
+            f"Good follow-up. You already captured the core of {concept_label}.\n"
+            "Instead of repeating the same definition, add:\n"
+            "1. Why each step matters.\n"
+            "2. One concrete example or tool.\n"
+            "3. One common pitfall and how to detect it.\n\n"
+            f"Can you apply that to one small {concept_label} example?"
+        )
 
     @staticmethod
     def _clean_topic_phrase(value: str) -> str:
@@ -633,7 +1550,16 @@ class MentorAIService:
 
         return "general"
 
-    def _generate_socratic_response(self, student_id: int, query: str, concept: str, style: str, context: Dict) -> str:
+    def _generate_socratic_response(
+        self,
+        student_id: int,
+        query: str,
+        concept: str,
+        style: str,
+        context: Dict,
+        latest_response: Optional[MentorResponse] = None,
+        is_follow_up_turn: bool = False,
+    ) -> str:
         if self._is_skills_query((query or "").lower()):
             return self._skills_requirement_response(query=query, concept=concept, context=context)
 
@@ -643,10 +1569,18 @@ class MentorAIService:
             concept=concept,
             style=style,
             context=context,
+            latest_response=latest_response,
+            is_follow_up_turn=is_follow_up_turn,
         )
         if llm_text:
             return llm_text
-        return self._local_socratic_response(query=query, concept=concept, style=style)
+        return self._local_socratic_response(
+            query=query,
+            concept=concept,
+            style=style,
+            latest_response=latest_response,
+            is_follow_up_turn=is_follow_up_turn,
+        )
 
     @staticmethod
     def _is_skills_query(query_l: str) -> bool:
@@ -769,7 +1703,16 @@ class MentorAIService:
             lines.append(f"   Mentor summary: {(r_text or '')[:220]}")
         return "\n".join(lines)
 
-    def _try_llm_response(self, student_id: int, query: str, concept: str, style: str, context: Dict) -> Optional[str]:
+    def _try_llm_response(
+        self,
+        student_id: int,
+        query: str,
+        concept: str,
+        style: str,
+        context: Dict,
+        latest_response: Optional[MentorResponse] = None,
+        is_follow_up_turn: bool = False,
+    ) -> Optional[str]:
         api_key = os.getenv("OPENAI_API_KEY")
         api_base = os.getenv("OPENAI_API_BASE")
         if not api_key:
@@ -788,7 +1731,32 @@ class MentorAIService:
             "You are an expert AI mentor.\n"
             "Always answer the student's actual question directly first.\n"
             "Then add 1-2 Socratic follow-up questions.\n"
-            "Do not give generic placeholders. Keep output practical and relevant."
+            "Do not give generic placeholders. Keep output practical and relevant.\n"
+            "If the student follow-up overlaps with your previous answer, avoid repeating the same explanation."
+        )
+        previous_query = (latest_response.query if latest_response else "None")
+        previous_answer_summary = ((latest_response.response or "")[:280] if latest_response else "None")
+        follow_up_instruction = (
+            "This is a follow-up/reflection turn.\n"
+            "Acknowledge what the student got right in one sentence.\n"
+            "Then add only missing points and one targeted next question.\n"
+            "Do NOT restate the full definition. Keep under 220 words."
+            if is_follow_up_turn
+            else "If the current query overlaps with recent context, avoid repeating previous wording."
+        )
+        response_format = (
+            "Response format:\n"
+            "1) One validation sentence\n"
+            "2) Incremental explanation (3-6 short lines)\n"
+            "3) One guiding question"
+            if is_follow_up_turn
+            else (
+                "Response format:\n"
+                "1) Direct answer (2-8 short paragraphs)\n"
+                "2) If useful, bullet list of steps\n"
+                "3) Two guiding questions\n"
+                "4) Never label the topic as 'general' if the query clearly names a topic."
+            )
         )
         user_prompt = (
             f"Student query: {query}\n"
@@ -796,12 +1764,12 @@ class MentorAIService:
             f"Style: {style}\n"
             f"Style guidance: {style_instruction}\n"
             f"Student context: {context}\n"
+            f"Latest student query in this thread: {previous_query}\n"
+            f"Latest mentor answer summary: {previous_answer_summary}\n"
+            f"Follow-up mode: {'yes' if is_follow_up_turn else 'no'}\n"
+            f"Instruction: {follow_up_instruction}\n"
             f"Recent interaction context:\n{self._recent_context(student_id=student_id)}\n\n"
-            "Response format:\n"
-            "1) Direct answer (2-8 short paragraphs)\n"
-            "2) If useful, bullet list of steps\n"
-            "3) Two guiding questions\n"
-            "4) Never label the topic as 'general' if the query clearly names a topic."
+            f"{response_format}"
         )
 
         headers = None
@@ -868,6 +1836,10 @@ class MentorAIService:
             "data analysis": (
                 "Data analysis is the process of cleaning, exploring, and interpreting data "
                 "to answer questions and support decisions."
+            ),
+            "data engineering": (
+                "Data engineering designs and operates data pipelines that ingest, transform, and load data "
+                "into reliable systems for analytics and machine learning."
             ),
             "sql": (
                 "SQL is the standard language for querying and transforming structured data "
@@ -969,12 +1941,39 @@ class MentorAIService:
         )
 
     @staticmethod
-    def _local_socratic_response(query: str, concept: str, style: str) -> str:
+    def _local_socratic_response(
+        query: str,
+        concept: str,
+        style: str,
+        latest_response: Optional[MentorResponse] = None,
+        is_follow_up_turn: bool = False,
+    ) -> str:
         query_l = (query or "").lower()
         extracted_topic = MentorAIService._extract_topic_from_query(query)
         topic = concept if concept and concept != "general" else extracted_topic
         if not topic or topic == "general":
             topic = "the topic in your question"
+
+        if is_follow_up_turn and latest_response:
+            previous_concept = concept if concept and concept != "general" else (latest_response.target_concept or topic)
+            if previous_concept == "data engineering":
+                return (
+                    "Good start. You correctly identified ETL in data engineering.\n"
+                    "To strengthen your answer, add what happens inside each step:\n"
+                    "1. Extract: source reliability and ingestion frequency.\n"
+                    "2. Transform: cleaning, type normalization, deduplication, quality rules.\n"
+                    "3. Load: warehouse/lake target schema and validation checks.\n\n"
+                    "Now apply it: if clickstream data has duplicate events, which transformation rule would you use before load?"
+                )
+
+            return (
+                f"Good follow-up. Your summary of {previous_concept} is on track.\n"
+                "To make it complete, add:\n"
+                "1. Why each step exists.\n"
+                "2. One concrete tool/example.\n"
+                "3. One common failure mode and prevention check.\n\n"
+                f"Can you extend your answer with one practical {previous_concept} example?"
+            )
         asks_definition = (
             query_l.startswith("what is ")
             or query_l.startswith("what are ")
@@ -1515,6 +2514,184 @@ class AdaptiveLearningService:
             )
 
         return recommendations
+
+    def generate_study_plan(
+        self,
+        student_id: int,
+        weeks: int = 2,
+        days_per_week: int = 5,
+        daily_minutes: int = 60,
+    ) -> Dict:
+        profile = self.profile_service.get_profile(student_id)
+        if not profile:
+            raise ValueError(f"Profile not found for student {student_id}")
+
+        weaknesses = self.weakness_service.get_weakest_concepts(
+            student_id,
+            limit=max(5, days_per_week),
+        )
+        prioritized_concepts = [row.concept_name for row in weaknesses if row.concept_name]
+        if not prioritized_concepts:
+            prioritized_concepts = self._fallback_plan_concepts(profile)
+
+        key_weaknesses = [
+            {
+                "concept": row.concept_name,
+                "weakness_score": round(row.weakness_score, 3),
+                "priority": WeaknessAnalyzerService._calculate_learning_priority(row.weakness_score),
+            }
+            for row in weaknesses[:5]
+        ]
+        if not key_weaknesses:
+            key_weaknesses = [
+                {
+                    "concept": concept,
+                    "weakness_score": None,
+                    "priority": "medium",
+                }
+                for concept in prioritized_concepts[:3]
+            ]
+
+        goal_text = (profile.goals or "").strip() or "Build stronger fundamentals with consistent deliberate practice."
+        weekly_roadmap: List[Dict] = []
+        for week_number in range(1, weeks + 1):
+            primary_concept = prioritized_concepts[(week_number - 1) % len(prioritized_concepts)]
+            secondary_concept = prioritized_concepts[week_number % len(prioritized_concepts)]
+
+            days: List[Dict] = []
+            for day_number in range(1, days_per_week + 1):
+                concept_index = ((week_number - 1) * days_per_week + (day_number - 1)) % len(prioritized_concepts)
+                focus_concept = prioritized_concepts[concept_index]
+
+                days.append(
+                    {
+                        "day_number": day_number,
+                        "focus_concept": focus_concept,
+                        "objective": self._day_objective(day_number, focus_concept, primary_concept),
+                        "activities": self._day_activities(
+                            concept=focus_concept,
+                            day_number=day_number,
+                            daily_minutes=daily_minutes,
+                            preferred_difficulty=profile.preferred_difficulty.value,
+                        ),
+                        "estimated_minutes": daily_minutes,
+                    }
+                )
+
+            weekly_focus = (
+                f"Strengthen {primary_concept} and connect it with {secondary_concept}."
+                if primary_concept != secondary_concept
+                else f"Deepen understanding and speed in {primary_concept}."
+            )
+            weekly_roadmap.append(
+                {
+                    "week_number": week_number,
+                    "weekly_focus": weekly_focus,
+                    "goal_alignment": self._goal_alignment(goal_text, primary_concept),
+                    "days": days,
+                }
+            )
+
+        return {
+            "student_id": student_id,
+            "goals": goal_text,
+            "confidence_level": round(profile.confidence_level, 3),
+            "preferred_difficulty": profile.preferred_difficulty.value,
+            "weeks": weeks,
+            "days_per_week": days_per_week,
+            "daily_minutes": daily_minutes,
+            "key_weaknesses": key_weaknesses,
+            "weekly_roadmap": weekly_roadmap,
+            "guidance": self._plan_guidance(
+                confidence_level=profile.confidence_level,
+                preferred_difficulty=profile.preferred_difficulty.value,
+            ),
+        }
+
+    @staticmethod
+    def _fallback_plan_concepts(profile: StudentProfile) -> List[str]:
+        candidates: List[str] = []
+        for item in (profile.skills or []) + (profile.interests or []):
+            value = str(item).strip().lower()
+            if value and value not in candidates:
+                candidates.append(value)
+            if len(candidates) >= 6:
+                break
+
+        if not candidates and profile.goals:
+            for token in re.split(r"[,.;\n]", profile.goals.lower()):
+                value = token.strip()
+                if len(value) >= 3 and value not in candidates:
+                    candidates.append(value)
+                if len(candidates) >= 6:
+                    break
+
+        return candidates or ["core foundations", "problem solving", "revision"]
+
+    @staticmethod
+    def _day_objective(day_number: int, concept: str, weekly_anchor: str) -> str:
+        cycle = {
+            1: f"Rebuild fundamentals and identify one gap in {concept}.",
+            2: f"Apply {concept} through guided practice with worked examples.",
+            3: f"Strengthen recall speed and accuracy in {concept}.",
+            4: f"Integrate {concept} with {weekly_anchor} in mixed problems.",
+            0: f"Consolidate {concept} with reflection and a short self-quiz.",
+        }
+        return cycle[day_number % 5]
+
+    @staticmethod
+    def _day_activities(
+        concept: str,
+        day_number: int,
+        daily_minutes: int,
+        preferred_difficulty: str,
+    ) -> List[str]:
+        review_minutes = max(10, int(daily_minutes * 0.35))
+        practice_minutes = max(15, int(daily_minutes * 0.45))
+        reflection_minutes = max(5, daily_minutes - review_minutes - practice_minutes)
+
+        problem_count = {
+            "easy": "2-3",
+            "medium": "3-4",
+            "hard": "4-6",
+        }.get(preferred_difficulty, "3-4")
+
+        activities = [
+            f"{review_minutes} min: review notes and one solved example for {concept}.",
+            f"{practice_minutes} min: solve {problem_count} practice questions on {concept}.",
+        ]
+
+        if day_number % 5 == 0:
+            activities.append(
+                f"{reflection_minutes} min: take a short self-quiz and record the main mistakes to revisit."
+            )
+        else:
+            activities.append(
+                f"{reflection_minutes} min: summarize key takeaways and write one follow-up question."
+            )
+
+        return activities
+
+    @staticmethod
+    def _goal_alignment(goal_text: str, concept: str) -> str:
+        compact_goal = " ".join(goal_text.split())
+        if len(compact_goal) > 120:
+            compact_goal = f"{compact_goal[:117]}..."
+        return f"Focus on {concept} to move toward goal: {compact_goal}"
+
+    @staticmethod
+    def _plan_guidance(confidence_level: float, preferred_difficulty: str) -> List[str]:
+        guidance = [
+            "Track completion daily and carry unfinished tasks to the next day.",
+            "After each week, re-check weakness scores and rotate concepts if needed.",
+        ]
+
+        if confidence_level < 0.45:
+            guidance.append("Start each day with one easy warm-up question to build momentum.")
+        if preferred_difficulty == "hard":
+            guidance.append("End each study day with one transfer problem that mixes multiple concepts.")
+
+        return guidance
 
     @staticmethod
     def _analyze_feedback_sentiment(feedbacks: List[Feedback]) -> str:

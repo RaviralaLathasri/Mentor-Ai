@@ -85,6 +85,7 @@ class Student(Base):
     feedbacks = relationship("Feedback", back_populates="student")
     mentor_responses = relationship("MentorResponse", back_populates="student")
     adaptive_sessions = relationship("AdaptiveSession", back_populates="student")
+    mock_interviews = relationship("MockInterviewSession", back_populates="student")
 
 
 # ── Model 2: StudentProfile ───────────────────────────────────────────────────
@@ -283,6 +284,50 @@ class AdaptiveSession(Base):
 
 # ── Database Initialization ───────────────────────────────────────────────────
 
+class CareerRoadmap(Base):
+    """
+    Stores generated career roadmaps keyed by role.
+
+    The GET roadmap endpoint returns the latest generated roadmap for a role.
+    """
+    __tablename__ = "career_roadmaps"
+
+    id = Column(Integer, primary_key=True, index=True)
+    role = Column(String, nullable=False, index=True)
+    level = Column(String, nullable=False)
+    duration = Column(String, nullable=False)
+    roadmap_json = Column(JSON, default=dict, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class MockInterviewSession(Base):
+    """
+    Stores one complete mock interview attempt including transcript and scoring.
+
+    Transcript is persisted as JSON so playback is deterministic and auditable.
+    """
+    __tablename__ = "mock_interview_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String, unique=True, nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    role = Column(String, nullable=False, index=True)
+    duration = Column(String, nullable=True)
+    level = Column(String, nullable=False)
+    interview_type = Column(String, nullable=False, default="mixed")
+    question_count = Column(Integer, nullable=False, default=5)
+    transcript_json = Column(JSON, default=list, nullable=False)
+    overall_score = Column(Float, default=0.0)
+    strengths = Column(JSON, default=list, nullable=False)
+    improvement_areas = Column(JSON, default=list, nullable=False)
+    actionable_tips = Column(JSON, default=list, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    student = relationship("Student", back_populates="mock_interviews")
+
+
 def init_db():
     """
     Initialize database: create all tables and apply schema upgrades.
@@ -307,6 +352,13 @@ def init_db():
         for col_name, col_type in missing_cols:
             if col_name not in existing_cols:
                 conn.execute(text(f"ALTER TABLE feedbacks ADD COLUMN {col_name} {col_type}"))
+
+        # Backward compatibility: if mock interview table exists from an older
+        # version, ensure the optional duration column is present.
+        mock_cols_result = conn.execute(text("PRAGMA table_info(mock_interview_sessions)"))
+        mock_cols = {row[1] for row in mock_cols_result.fetchall()}
+        if mock_cols and "duration" not in mock_cols:
+            conn.execute(text("ALTER TABLE mock_interview_sessions ADD COLUMN duration VARCHAR"))
         
         conn.commit()
 

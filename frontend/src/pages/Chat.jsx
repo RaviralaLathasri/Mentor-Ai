@@ -7,6 +7,39 @@ import StudentBanner from "../components/StudentBanner";
 import useStudentId from "../hooks/useStudentId";
 import { feedbackApi, mentorApi } from "../services/api";
 
+const CHAT_STORAGE_PREFIX = "mentor_chat_messages_v1_";
+
+function chatStorageKey(studentId) {
+  return `${CHAT_STORAGE_PREFIX}${studentId}`;
+}
+
+function defaultWelcomeMessage(studentId) {
+  return {
+    id: `welcome-${studentId}`,
+    role: "assistant",
+    text: "Start with a concept question. I will guide using Socratic prompts.",
+  };
+}
+
+function loadStoredMessages(studentId) {
+  if (!studentId) return [];
+  const raw = localStorage.getItem(chatStorageKey(studentId));
+  if (!raw) return [];
+
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item) => item && item.id && item.role && item.text);
+  } catch {
+    return [];
+  }
+}
+
+function storeMessages(studentId, messages) {
+  if (!studentId) return;
+  localStorage.setItem(chatStorageKey(studentId), JSON.stringify(messages));
+}
+
 export default function Chat() {
   const [studentId, setStudentId] = useStudentId();
   const [messages, setMessages] = useState([]);
@@ -21,18 +54,24 @@ export default function Chat() {
       return;
     }
 
-    setMessages([
-      {
-        id: `welcome-${studentId}`,
-        role: "assistant",
-        text: "Start with a concept question. I will guide using Socratic prompts.",
-      },
-    ]);
+    const stored = loadStoredMessages(studentId);
+    if (stored.length > 0) {
+      setMessages(stored);
+      return;
+    }
+
+    setMessages([defaultWelcomeMessage(studentId)]);
   }, [studentId]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    if (!studentId) return;
+    if (!messages.length) return;
+    storeMessages(studentId, messages);
+  }, [studentId, messages]);
 
   const canSend = useMemo(() => Boolean(studentId && query.trim() && !sending), [studentId, query, sending]);
 
