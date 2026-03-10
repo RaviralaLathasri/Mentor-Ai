@@ -2,21 +2,28 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 
 from app.audio_interview.evaluation_engine import EvaluationEngine
 from app.audio_interview.interview_engine import InterviewEngine
+from app.audio_interview.memory_store import MEMORY_INTERVIEW_STORE
 from app.audio_interview.redis_manager import RedisInterviewStore
 from app.audio_interview.stt_service import GroqWhisperSTTService, pcm16le_to_wav_bytes
 from app.audio_interview.tts_service import ElevenLabsTTSService
 
 
 router = APIRouter(prefix="/api/audio-interview", tags=["Audio Interview"])
+logger = logging.getLogger(__name__)
+
+_STORE_MODE: Optional[str] = None  # "redis" | "memory"
+_STORE_WARNING: Optional[str] = None
+_STORE_LOCK = asyncio.Lock()
 
 
 def _redis_url() -> str:
@@ -33,6 +40,8 @@ async def _redis_client():
         _redis_url(),
         encoding="utf-8",
         decode_responses=True,
+        socket_connect_timeout=float(os.getenv("REDIS_SOCKET_CONNECT_TIMEOUT", "1.0")),
+        socket_timeout=float(os.getenv("REDIS_SOCKET_TIMEOUT", "2.0")),
     )
 
 
@@ -106,6 +115,99 @@ def _aggregate_report(evaluations: List[Dict[str, Any]]) -> Dict[str, Any]:
         "weaknesses": weaknesses,
         "improvement_suggestions": suggestions,
     }
+
+
+async def _probe_redis() -> Tuple[bool, str]:
+    try:
+        redis = await _redis_client()
+        try:
+            await redis.ping()
+        finally:
+            try:
+                await redis.close()
+            except Exception:
+                pass
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+async def _resolve_store_mode() -> Tuple[str, Optional[str]]:
+    """
+    Resolve the session store backend once per process:
+
+    - If INTERVIEW_STORE_BACKEND is set:
+      - "redis": require Redis to be reachable.
+      - "memory": use in-memory store (dev only).
+    - Otherwise: auto-detect Redis, and fall back to memory if Redis is unavailable.
+    """
+    global _STORE_MODE, _STORE_WARNING
+    if _STORE_MODE:
+        return _STORE_MODE, _STORE_WARNING
+
+    async with _STORE_LOCK:
+        if _STORE_MODE:
+            return _STORE_MODE, _STORE_WARNING
+
+        requested = (os.getenv("INTERVIEW_STORE_BACKEND") or "").strip().lower()
+        if requested and requested not in ("redis", "memory", "auto"):
+            logger.warning("Unknown INTERVIEW_STORE_BACKEND=%r; falling back to auto.", requested)
+            requested = "auto"
+
+        if requested == "memory":
+            _STORE_MODE = "memory"
+            _STORE_WARNING = (
+                "Using in-memory interview session store (INTERVIEW_STORE_BACKEND=memory). "
+                "This is intended for local/dev only; use Redis for production."
+            )
+            return _STORE_MODE, _STORE_WARNING
+
+        if requested == "redis":
+            ok, err = await _probe_redis()
+            if not ok:
+                raise RuntimeError(f"Redis store required but unavailable at {_redis_url()}: {err}")
+            _STORE_MODE = "redis"
+            _STORE_WARNING = None
+            return _STORE_MODE, _STORE_WARNING
+
+        # auto (default)
+        ok, err = await _probe_redis()
+        if ok:
+            _STORE_MODE = "redis"
+            _STORE_WARNING = None
+            return _STORE_MODE, _STORE_WARNING
+
+        _STORE_MODE = "memory"
+        _STORE_WARNING = (
+            f"Redis is unavailable at {_redis_url()} ({err}). "
+            "Falling back to in-memory session store for this process. "
+            "For production, run Redis and set INTERVIEW_STORE_BACKEND=redis."
+        )
+        logger.warning(_STORE_WARNING)
+        return _STORE_MODE, _STORE_WARNING
+
+
+async def _get_store():
+    """
+    Returns: (store, redis_client, store_backend, warning)
+
+    redis_client is only present when store_backend == "redis" and should be closed by the caller.
+    """
+    mode, warning = await _resolve_store_mode()
+    if mode == "memory":
+        return MEMORY_INTERVIEW_STORE, None, "memory", warning
+
+    redis = await _redis_client()
+    try:
+        await redis.ping()
+    except Exception as e:
+        try:
+            await redis.close()
+        except Exception:
+            pass
+        raise RuntimeError(f"Redis is not reachable at {_redis_url()}: {str(e)}") from e
+
+    return RedisInterviewStore(redis), redis, "redis", warning
 
 
 @dataclass
@@ -207,8 +309,7 @@ async def stream_current_question_audio(session_id: str):
 
     Audio is streamed and discarded; no audio is stored on disk.
     """
-    redis = await _redis_client()
-    store = RedisInterviewStore(redis)
+    store, redis, _, _ = await _get_store()
     try:
         question = await store.get_current_question(session_id)
         if not question:
@@ -225,15 +326,15 @@ async def stream_current_question_audio(session_id: str):
         return StreamingResponse(_iter_audio(), media_type="audio/mpeg")
     finally:
         try:
-            await redis.close()
+            if redis:
+                await redis.close()
         except Exception:
             pass
 
 
 @router.get("/report/{session_id}")
 async def get_interview_report(session_id: str) -> Dict[str, Any]:
-    redis = await _redis_client()
-    store = RedisInterviewStore(redis)
+    store, redis, _, _ = await _get_store()
     try:
         report = await store.get_report(session_id)
         if not report:
@@ -241,7 +342,8 @@ async def get_interview_report(session_id: str) -> Dict[str, Any]:
         return report
     finally:
         try:
-            await redis.close()
+            if redis:
+                await redis.close()
         except Exception:
             pass
 
@@ -261,11 +363,26 @@ async def audio_interview_ws(websocket: WebSocket):
     """
     await websocket.accept()
 
-    redis = await _redis_client()
-    store = RedisInterviewStore(redis)
+    redis = None
+    store_backend = "unknown"
+    store_warning: Optional[str] = None
+    try:
+        store, redis, store_backend, store_warning = await _get_store()
+    except Exception as e:
+        try:
+            await websocket.send_text(_safe_json({"type": "error", "message": f"Interview store init failed: {str(e)}"}))
+        except Exception:
+            pass
+        try:
+            await websocket.close(code=1011)
+        except Exception:
+            pass
+        return
+
     engine = InterviewEngine()
     evaluator = EvaluationEngine()
     stt = GroqWhisperSTTService()
+    tts_enabled = ElevenLabsTTSService().enabled()
 
     session_id: Optional[str] = None
     role = ""
@@ -291,7 +408,7 @@ async def audio_interview_ws(websocket: WebSocket):
                     "question": question,
                     "question_index": current_index + 1,
                     "total_questions": len(questions),
-                    "tts_url": _tts_url(session_id) if session_id else None,
+                    "tts_url": _tts_url(session_id) if (session_id and tts_enabled) else None,
                 }
             )
         )
@@ -357,7 +474,9 @@ async def audio_interview_ws(websocket: WebSocket):
                             "difficulty": difficulty,
                             "total_questions": len(questions),
                             "stt_enabled": stt.enabled(),
-                            "tts_enabled": ElevenLabsTTSService().enabled(),
+                            "tts_enabled": tts_enabled,
+                            "store_backend": store_backend,
+                            "warnings": [store_warning] if store_warning else [],
                         }
                     )
                 )
@@ -419,12 +538,18 @@ async def audio_interview_ws(websocket: WebSocket):
             await websocket.send_text(_safe_json({"type": "error", "message": f"Unknown message type: {msg_type}"}))
     except WebSocketDisconnect:
         pass
+    except Exception as e:
+        try:
+            await websocket.send_text(_safe_json({"type": "error", "message": f"Server error: {str(e)}"}))
+        except Exception:
+            pass
     finally:
         try:
             await stt_stream.stop()
         except Exception:
             pass
         try:
-            await redis.close()
+            if redis:
+                await redis.close()
         except Exception:
             pass

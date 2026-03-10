@@ -68,10 +68,20 @@ export default function InterviewPage() {
       );
     };
 
-    ws.onclose = () => {
+    ws.onclose = (event) => {
       setConnected(false);
       setListening(false);
       setAiSpeaking(false);
+      // If the socket closes unexpectedly, surface it (common cause: missing Redis).
+      // Note: `onerror` isn't guaranteed to fire for all close scenarios.
+      const code = event?.code || 0;
+      if (code && code !== 1000) {
+        const reason = event?.reason ? ` (${event.reason})` : "";
+        setNotice((prev) => {
+          if (prev?.type === "error" && prev?.message) return prev;
+          return { type: "error", message: `WebSocket closed (code ${code})${reason}. Check backend logs and Redis configuration.` };
+        });
+      }
     };
 
     ws.onerror = () => {
@@ -84,6 +94,10 @@ export default function InterviewPage() {
         if (msg.type === "session_started") {
           setSessionId(msg.session_id);
           setTotalQuestions(msg.total_questions || 0);
+          const warnings = Array.isArray(msg.warnings) ? msg.warnings.filter(Boolean) : [];
+          if (warnings.length) {
+            setNotice({ type: "warning", message: warnings.join(" ") });
+          }
           return;
         }
         if (msg.type === "question") {
@@ -297,4 +311,3 @@ export default function InterviewPage() {
     </PageShell>
   );
 }
-
