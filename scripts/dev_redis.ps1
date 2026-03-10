@@ -1,5 +1,6 @@
 param(
-  [int]$Port = 6379
+  [int]$Port = 6379,
+  [switch]$Foreground
 )
 
 $ErrorActionPreference = "Stop"
@@ -51,6 +52,13 @@ $confPath = Join-Path $redisRoot "redis-dev-$Port.conf"
 Write-Host "Starting Redis server on 127.0.0.1:$Port (no persistence)..." -ForegroundColor Cyan
 $stdout = Join-Path $redisRoot "redis-$Port.out.log"
 $stderr = Join-Path $redisRoot "redis-$Port.err.log"
+if ($Foreground) {
+  Write-Host "Running Redis in foreground. Keep this terminal open. Stop with Ctrl+C." -ForegroundColor DarkGray
+  Write-Host ("Suggested .env setting: REDIS_URL=redis://127.0.0.1:{0}/0" -f $Port) -ForegroundColor DarkGray
+  & $serverExe $confPath
+  exit $LASTEXITCODE
+}
+
 $proc = Start-Process -FilePath $serverExe -ArgumentList @($confPath) -WorkingDirectory $extractDir -NoNewWindow -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
 
 Start-Sleep -Seconds 1
