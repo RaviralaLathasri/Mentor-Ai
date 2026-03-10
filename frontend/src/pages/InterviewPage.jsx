@@ -31,6 +31,8 @@ export default function InterviewPage() {
   const [questionIndex, setQuestionIndex] = useState(0);
   const [totalQuestions, setTotalQuestions] = useState(0);
   const [ttsUrl, setTtsUrl] = useState("");
+  const [ttsEnabled, setTtsEnabled] = useState(false);
+  const [sttEnabled, setSttEnabled] = useState(false);
 
   const [aiSpeaking, setAiSpeaking] = useState(false);
   const [listening, setListening] = useState(false);
@@ -50,6 +52,8 @@ export default function InterviewPage() {
     setQuestion("");
     setQuestionIndex(0);
     setTotalQuestions(0);
+    setTtsEnabled(false);
+    setSttEnabled(false);
 
     const ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";
@@ -94,9 +98,13 @@ export default function InterviewPage() {
         if (msg.type === "session_started") {
           setSessionId(msg.session_id);
           setTotalQuestions(msg.total_questions || 0);
+          setTtsEnabled(Boolean(msg.tts_enabled));
+          setSttEnabled(Boolean(msg.stt_enabled));
           const warnings = Array.isArray(msg.warnings) ? msg.warnings.filter(Boolean) : [];
           if (warnings.length) {
             setNotice({ type: "warning", message: warnings.join(" ") });
+          } else if (msg.stt_enabled === false) {
+            setNotice({ type: "warning", message: "STT is not configured. Set GROQ_API_KEY to enable live transcription." });
           }
           return;
         }
@@ -108,6 +116,14 @@ export default function InterviewPage() {
           setTranscript("");
           setLastEvaluation(null);
           setFinalReport(null);
+          // If TTS isn't enabled/configured, there is no audio to play. Turn on listening so the student can answer.
+          if (!msg.tts_url) {
+            setAiSpeaking(false);
+            setListening(true);
+          } else {
+            // Wait for the audio player to flip listening state (on end / autoplay fallback).
+            setListening(false);
+          }
           return;
         }
         if (msg.type === "transcript") {
@@ -157,6 +173,16 @@ export default function InterviewPage() {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     setListening(false);
     ws.send(JSON.stringify({ type: "stop_answer" }));
+  };
+
+  const startMic = () => {
+    if (!connected) return;
+    setAiSpeaking(false);
+    setListening(true);
+  };
+
+  const muteMic = () => {
+    setListening(false);
   };
 
   useEffect(() => {
@@ -274,6 +300,20 @@ export default function InterviewPage() {
 
           <section className="panel">
             <h3>Microphone</h3>
+            <div className="button-row" style={{ marginBottom: 10 }}>
+              {!listening ? (
+                <button className="primary-btn" onClick={startMic} disabled={!connected || aiSpeaking}>
+                  Start Mic
+                </button>
+              ) : (
+                <button className="ghost-btn" onClick={muteMic} disabled={!connected}>
+                  Mute Mic
+                </button>
+              )}
+              <small style={{ alignSelf: "center", color: "var(--muted)" }}>
+                Speak when <strong>Listening</strong> is <strong>Yes</strong>.
+              </small>
+            </div>
             <AudioRecorder
               wsRef={wsRef}
               enabled={connected && listening && !aiSpeaking}
