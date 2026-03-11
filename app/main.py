@@ -1,9 +1,11 @@
 """FastAPI application entrypoint."""
 
 import os
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 
 from app.database import init_db
 from app.routes import (
@@ -63,6 +65,37 @@ def health_check() -> dict:
     return {"status": "ok", "project": "Mentor AI", "version": "1.1.0"}
 
 
-@app.get("/")
-def home() -> dict:
-    return {"message": "Mentor AI Backend Running Successfully"}
+def _frontend_dist_dir() -> Path:
+    # Default for Docker builds that copy Vite output to `/app/frontend/dist`.
+    default = Path(__file__).resolve().parents[1] / "frontend" / "dist"
+    return Path(os.getenv("FRONTEND_DIST_DIR") or default)
+
+
+_DIST_DIR = _frontend_dist_dir()
+_INDEX_HTML = _DIST_DIR / "index.html"
+
+
+if _INDEX_HTML.is_file():
+
+    @app.get("/", include_in_schema=False)
+    def serve_frontend_root():
+        return FileResponse(_INDEX_HTML)
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_frontend_paths(full_path: str):
+        # Let real API routes win. If someone hits an unknown `/api/*` path, return 404 (not the SPA).
+        if full_path == "api" or full_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not found")
+
+        requested = _DIST_DIR / (full_path or "")
+        if requested.is_file():
+            return FileResponse(requested)
+
+        # SPA fallback (React Router deep links)
+        return FileResponse(_INDEX_HTML)
+
+else:
+
+    @app.get("/", include_in_schema=False)
+    def home() -> dict:
+        return {"message": "Mentor AI Backend Running Successfully"}

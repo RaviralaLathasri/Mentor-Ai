@@ -96,4 +96,6 @@ docker build -t mentor-ai-backend .
 docker run --rm -p 8000:8000 -e PORT=8000 --env-file .env mentor-ai-backend
 ```
 
+When deployed with the root `Dockerfile`, the build also compiles the React app and the backend serves it from `/` (API stays under `/api`).
+
 See [DEPLOYMENT_READY_GUIDE.md](DEPLOYMENT_READY_GUIDE.md) for production deployment steps.

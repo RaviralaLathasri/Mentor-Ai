@@ -7,7 +7,8 @@ function normalizeBaseUrl(url) {
   return url.replace("://localhost", "://127.0.0.1");
 }
 
-export const API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL) || "http://127.0.0.1:8000";
+// Default to same-origin API (works when frontend is served by the backend under the same domain).
+export const API_BASE_URL = normalizeBaseUrl(import.meta.env.VITE_API_BASE_URL) || "";
 
 export function wsBaseUrl() {
   // If API_BASE_URL is relative (""), derive WS URL from current origin.
@@ -30,8 +31,9 @@ const api = axios.create({
 
 function parseError(error) {
   if (error?.code === "ERR_NETWORK" || error?.message === "Network Error") {
-    const healthUrl = `${API_BASE_URL.replace(/\/+$/, "")}/health`;
-    return `Network Error: cannot reach backend API at ${API_BASE_URL}. Confirm the backend is running and that ${healthUrl} loads in your browser.`;
+    const base = API_BASE_URL || "(same origin)";
+    const healthUrl = `${(API_BASE_URL || "").replace(/\/+$/, "")}/health` || "/health";
+    return `Network Error: cannot reach backend API at ${base}. Confirm the backend is running and that ${healthUrl} loads in your browser.`;
   }
   if (error?.response?.data?.detail) {
     return error.response.data.detail;
