@@ -24,6 +24,9 @@ export default function InterviewPage() {
   const [role, setRole] = useState("Data Analyst");
   const [difficulty, setDifficulty] = useState("Beginner");
   const [questionCount, setQuestionCount] = useState(5);
+  const [connecting, setConnecting] = useState(false);
+  const [micDevices, setMicDevices] = useState([]);
+  const [micDeviceId, setMicDeviceId] = useState("");
 
   const [connected, setConnected] = useState(false);
   const [sessionId, setSessionId] = useState(null);
@@ -44,7 +47,24 @@ export default function InterviewPage() {
 
   const wsUrl = useMemo(() => `${wsBaseUrl()}/api/audio-interview/ws`, []);
 
+  const refreshMicDevices = async () => {
+    try {
+      if (!navigator?.mediaDevices?.enumerateDevices) return;
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const inputs = (devices || []).filter((d) => d.kind === "audioinput");
+      setMicDevices(
+        inputs.map((d, idx) => ({
+          deviceId: d.deviceId,
+          label: d.label || `Microphone ${idx + 1}`,
+        })),
+      );
+    } catch {
+      // ignore
+    }
+  };
+
   const startInterview = async () => {
+    if (connecting || connected) return;
     setNotice({ type: "info", message: "" });
     setLastEvaluation(null);
     setFinalReport(null);
@@ -54,13 +74,34 @@ export default function InterviewPage() {
     setTotalQuestions(0);
     setTtsEnabled(false);
     setSttEnabled(false);
+    setConnecting(true);
+
+    // If the user double-clicks Start, ensure we don't leave orphan sockets around.
+    try {
+      wsRef.current?.close();
+    } catch {
+      // ignore
+    }
+    wsRef.current = null;
 
     const ws = new WebSocket(wsUrl);
     ws.binaryType = "arraybuffer";
     wsRef.current = ws;
 
+    const isCurrent = () => wsRef.current === ws;
+
     ws.onopen = () => {
+      if (!isCurrent()) {
+        try {
+          ws.close();
+        } catch {
+          // ignore
+        }
+        return;
+      }
       setConnected(true);
+      setConnecting(false);
+      refreshMicDevices();
       ws.send(
         JSON.stringify({
           type: "start",
@@ -73,9 +114,12 @@ export default function InterviewPage() {
     };
 
     ws.onclose = (event) => {
+      if (!isCurrent()) return;
       setConnected(false);
+      setConnecting(false);
       setListening(false);
       setAiSpeaking(false);
+      wsRef.current = null;
       // If the socket closes unexpectedly, surface it (common cause: missing Redis).
       // Note: `onerror` isn't guaranteed to fire for all close scenarios.
       const code = event?.code || 0;
@@ -89,10 +133,13 @@ export default function InterviewPage() {
     };
 
     ws.onerror = () => {
+      if (!isCurrent()) return;
+      setConnecting(false);
       setNotice({ type: "error", message: "WebSocket error. Check backend is running and reachable." });
     };
 
     ws.onmessage = (event) => {
+      if (!isCurrent()) return;
       try {
         const msg = JSON.parse(event.data);
         if (msg.type === "session_started") {
@@ -163,6 +210,7 @@ export default function InterviewPage() {
       // ignore
     }
     wsRef.current = null;
+    setConnecting(false);
     setConnected(false);
     setListening(false);
     setAiSpeaking(false);
@@ -179,6 +227,8 @@ export default function InterviewPage() {
     if (!connected) return;
     setAiSpeaking(false);
     setListening(true);
+    // Refresh after permission is granted, so device labels show up.
+    setTimeout(() => refreshMicDevices(), 500);
   };
 
   const muteMic = () => {
@@ -186,6 +236,7 @@ export default function InterviewPage() {
   };
 
   useEffect(() => {
+    refreshMicDevices();
     return () => stopInterview();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -238,8 +289,8 @@ export default function InterviewPage() {
 
         <div className="button-row full-width">
           {!connected ? (
-            <button className="primary-btn" onClick={startInterview} disabled={!studentId}>
-              Start Interview
+            <button className="primary-btn" onClick={startInterview} disabled={!studentId || connecting}>
+              {connecting ? "Starting..." : "Start Interview"}
             </button>
           ) : (
             <>
@@ -252,6 +303,11 @@ export default function InterviewPage() {
             </>
           )}
         </div>
+        {connected ? (
+          <small className="muted">
+            When you finish speaking, click <strong>Submit Answer</strong> to transcribe, evaluate, and move to the next question.
+          </small>
+        ) : null}
         <small>
           Backend: {API_BASE_URL || "(relative)"}. WebSocket: {wsUrl}.
         </small>
@@ -300,6 +356,23 @@ export default function InterviewPage() {
 
           <section className="panel">
             <h3>Microphone</h3>
+            <label style={{ display: "block", marginBottom: 10 }}>
+              Microphone device
+              <div className="button-row" style={{ marginTop: 6 }}>
+                <select value={micDeviceId} onChange={(e) => setMicDeviceId(e.target.value)} disabled={!connected || listening}>
+                  <option value="">Default microphone</option>
+                  {(micDevices || []).map((d) => (
+                    <option key={d.deviceId} value={d.deviceId}>
+                      {d.label}
+                    </option>
+                  ))}
+                </select>
+                <button className="ghost-btn" type="button" onClick={refreshMicDevices} disabled={!connected}>
+                  Refresh
+                </button>
+                <small style={{ alignSelf: "center", color: "var(--muted)" }}>Stop mic to change device.</small>
+              </div>
+            </label>
             <div className="button-row" style={{ marginBottom: 10 }}>
               {!listening ? (
                 <button className="primary-btn" onClick={startMic} disabled={!connected || aiSpeaking || !sttEnabled}>
@@ -322,6 +395,7 @@ export default function InterviewPage() {
             <AudioRecorder
               wsRef={wsRef}
               enabled={connected && listening && !aiSpeaking}
+              deviceId={micDeviceId}
               onError={(message) => setNotice({ type: "error", message })}
             />
             <small>Audio is streamed to backend as in-memory PCM and discarded after transcription.</small>

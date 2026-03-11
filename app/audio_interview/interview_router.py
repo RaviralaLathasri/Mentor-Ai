@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -132,13 +133,94 @@ def _stt_segment_bytes() -> int:
         except Exception:
             pass
 
-    raw_sec = (os.getenv("STT_SEGMENT_SECONDS") or "1.2").strip()
+    # Default slightly larger than "real-time" to avoid API rate limits.
+    raw_sec = (os.getenv("STT_SEGMENT_SECONDS") or "3.0").strip()
     try:
         sec = float(raw_sec)
     except Exception:
-        sec = 1.2
+        sec = 3.0
     sec = _clamp(sec, 0.5, 6.0)
     return int(sec * 16000 * 2)
+
+
+def _stt_language() -> Optional[str]:
+    """
+    Optional: Force Whisper transcription language (e.g. "en", "hi").
+
+    If unset/blank, Whisper will auto-detect language.
+    """
+    raw = (os.getenv("STT_LANGUAGE") or "").strip()
+    return raw or None
+
+
+def _stt_min_mean_abs() -> int:
+    """
+    Skip STT calls when audio is basically silence.
+
+    Units: mean absolute amplitude in PCM16 (0..32767). Default is conservative.
+    """
+    raw = (os.getenv("STT_MIN_MEAN_ABS") or "").strip()
+    if raw:
+        try:
+            return max(0, min(5000, int(float(raw))))
+        except Exception:
+            pass
+    return 250
+
+
+def _stt_min_interval_seconds() -> float:
+    """
+    Minimum time between STT calls for partial transcripts.
+
+    This prevents hitting provider rate limits when segment_bytes is small.
+    """
+    raw = (os.getenv("STT_MIN_INTERVAL_SECONDS") or "").strip()
+    if raw:
+        try:
+            return _clamp(float(raw), 0.0, 30.0)
+        except Exception:
+            pass
+    return 2.5
+
+
+def _stt_rate_limit_cooldown_seconds() -> float:
+    """
+    Cooldown applied after a 429 from the STT provider.
+
+    During cooldown, partial transcripts are skipped to avoid repeated 429s.
+    """
+    raw = (os.getenv("STT_RATE_LIMIT_COOLDOWN_SECONDS") or "").strip()
+    if raw:
+        try:
+            return _clamp(float(raw), 1.0, 120.0)
+        except Exception:
+            pass
+    return 15.0
+
+
+def _mean_abs_pcm16le(pcm16le: bytes, *, step_samples: int = 8) -> float:
+    """
+    Fast-ish mean-absolute-amplitude estimator for PCM16LE.
+
+    We sample every Nth sample to avoid spending too much CPU in the WS loop.
+    """
+    if not pcm16le:
+        return 0.0
+    mv = memoryview(pcm16le)
+    n = len(mv) // 2  # int16 samples
+    if n <= 0:
+        return 0.0
+    step = max(1, int(step_samples))
+
+    total = 0
+    count = 0
+    # int.from_bytes on 2-byte slices is fine at this scale; we sample sparsely.
+    for i in range(0, n, step):
+        start = i * 2
+        sample = int.from_bytes(mv[start : start + 2], "little", signed=True)
+        total += abs(sample)
+        count += 1
+    return float(total) / float(max(1, count))
 
 
 async def _probe_redis() -> Tuple[bool, str]:
@@ -220,6 +302,10 @@ async def _get_store():
     if mode == "memory":
         return MEMORY_INTERVIEW_STORE, None, "memory", warning
 
+    # Redis mode selected (auto or forced). Try to connect; if Redis becomes unavailable and the user
+    # didn't explicitly force Redis, fall back to memory so the interview can still run in dev.
+    requested = (os.getenv("INTERVIEW_STORE_BACKEND") or "").strip().lower()
+
     redis = await _redis_client()
     try:
         await redis.ping()
@@ -228,7 +314,20 @@ async def _get_store():
             await redis.close()
         except Exception:
             pass
-        raise RuntimeError(f"Redis is not reachable at {_redis_url()}: {str(e)}") from e
+
+        if requested == "redis":
+            raise RuntimeError(f"Redis is not reachable at {_redis_url()}: {str(e)}") from e
+
+        # Auto fallback (Redis was selected earlier but is now down/unreachable).
+        global _STORE_MODE, _STORE_WARNING
+        _STORE_MODE = "memory"
+        _STORE_WARNING = (
+            f"Redis is unavailable at {_redis_url()} ({str(e)}). "
+            "Falling back to in-memory session store for this process. "
+            "To use Redis, start it and set INTERVIEW_STORE_BACKEND=redis."
+        )
+        logger.warning(_STORE_WARNING)
+        return MEMORY_INTERVIEW_STORE, None, "memory", _STORE_WARNING
 
     return RedisInterviewStore(redis), redis, "redis", warning
 
@@ -247,11 +346,23 @@ class _STTStreamProcessor:
     stt: GroqWhisperSTTService
     # 16kHz mono PCM16 => 32000 bytes/sec. Default to ~2.5s.
     segment_bytes: int = 80000
+    # Optional forced language (e.g. "en", "hi"); None = auto-detect.
+    language: Optional[str] = None
+    # Silence gate to reduce Whisper hallucinations on silent/noisy chunks.
+    min_mean_abs: int = 250
+    # Throttle partial transcript calls (helps avoid 429s).
+    min_interval_seconds: float = 2.5
+    # Backoff after 429.
+    rate_limit_cooldown_seconds: float = 15.0
 
     _queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=120))
     _task: Optional[asyncio.Task] = None
     _buffer: bytearray = field(default_factory=bytearray)
     _parts: List[str] = field(default_factory=list)
+    _last_stt_at: float = 0.0
+    _cooldown_until: float = 0.0
+    _last_error_status: Optional[int] = None
+    _last_error_message: Optional[str] = None
 
     async def start(self) -> None:
         if self._task:
@@ -289,40 +400,93 @@ class _STTStreamProcessor:
                 if data:
                     self._buffer.extend(data)
                 if len(self._buffer) >= self.segment_bytes:
-                    await self._transcribe_and_emit(final=False)
+                    now = time.monotonic()
+                    if now >= self._cooldown_until and (
+                        self.min_interval_seconds <= 0
+                        or self._last_stt_at <= 0
+                        or (now - self._last_stt_at) >= float(self.min_interval_seconds)
+                    ):
+                        await self._transcribe_and_emit(final=False)
                 continue
 
             if kind == "flush":
                 fut = payload
                 # Transcribe remaining audio (if any) and return full answer transcript.
-                await self._transcribe_and_emit(final=True)
+                ok = await self._transcribe_and_emit(final=True)
+                if not ok:
+                    if fut and not fut.done():
+                        fut.set_exception(RuntimeError(self._last_error_message or "STT failed"))
+                    continue
+
                 full = " ".join([p for p in self._parts if p]).strip()
                 self._parts.clear()
                 if fut and not fut.done():
                     fut.set_result(full)
                 continue
 
-    async def _transcribe_and_emit(self, *, final: bool) -> None:
+    async def _transcribe_and_emit(self, *, final: bool) -> bool:
+        self._last_error_message = None
+        self._last_error_status = None
+
         if not self._buffer:
             # Still emit a final marker so the UI can transition.
             if final:
                 await self.websocket.send_text(_safe_json({"type": "transcript", "text": "", "final": True}))
-            return
+            return True
 
         pcm = bytes(self._buffer)
-        self._buffer.clear()  # discard audio buffer immediately after copying
+
+        # Avoid calling Whisper on silence; it tends to hallucinate filler text ("thank you", random languages).
+        if self.min_mean_abs > 0:
+            try:
+                mean_abs = _mean_abs_pcm16le(pcm)
+                if mean_abs < float(self.min_mean_abs):
+                    self._buffer.clear()  # discard silence buffer
+                    if final:
+                        await self.websocket.send_text(
+                            _safe_json({"type": "transcript", "text": "", "final": True, "skipped_silence": True})
+                        )
+                    return True
+            except Exception:
+                # If the gate fails for any reason, fall back to transcribing.
+                pass
 
         try:
             wav = pcm16le_to_wav_bytes(pcm, sample_rate=16000, channels=1)
-            text = (await self.stt.transcribe_wav(wav)) if self.stt.enabled() else ""
+            text = (await self.stt.transcribe_wav(wav, language=self.language)) if self.stt.enabled() else ""
+            self._buffer.clear()  # discard audio buffer immediately after successful transcription
+            self._last_stt_at = time.monotonic()
         except Exception as e:
-            await self.websocket.send_text(_safe_json({"type": "error", "message": f"STT failed: {str(e)}"}))
+            status_code = None
+            try:
+                status_code = getattr(getattr(e, "response", None), "status_code", None)
+            except Exception:
+                status_code = None
+
+            if status_code == 429:
+                # Back off to avoid hammering the provider.
+                self._cooldown_until = time.monotonic() + float(self.rate_limit_cooldown_seconds)
+                self._last_error_status = 429
+                self._last_error_message = "STT rate limited (429). Please wait, then click Submit Answer again."
+                await self.websocket.send_text(
+                    _safe_json(
+                        {
+                            "type": "error",
+                            "message": "STT rate limited (429). Please wait ~15s, then try again. Tip: increase STT_SEGMENT_SECONDS to reduce API calls.",
+                        }
+                    )
+                )
+            else:
+                self._last_error_status = int(status_code) if status_code is not None else None
+                self._last_error_message = f"STT failed: {str(e)}"
+                await self.websocket.send_text(_safe_json({"type": "error", "message": f"STT failed: {str(e)}"}))
             text = ""
 
         if text:
             self._parts.append(text)
 
         await self.websocket.send_text(_safe_json({"type": "transcript", "text": text, "final": final}))
+        return True if text or not self._last_error_message else False
 
 
 @router.get("/{session_id}/question/audio")
@@ -414,7 +578,15 @@ async def audio_interview_ws(websocket: WebSocket):
     questions: List[str] = []
     current_index = 0
 
-    stt_stream = _STTStreamProcessor(websocket=websocket, stt=stt, segment_bytes=_stt_segment_bytes())
+    stt_stream = _STTStreamProcessor(
+        websocket=websocket,
+        stt=stt,
+        segment_bytes=_stt_segment_bytes(),
+        language=_stt_language(),
+        min_mean_abs=_stt_min_mean_abs(),
+        min_interval_seconds=_stt_min_interval_seconds(),
+        rate_limit_cooldown_seconds=_stt_rate_limit_cooldown_seconds(),
+    )
     await stt_stream.start()
 
     async def _send_question() -> None:
@@ -519,7 +691,12 @@ async def audio_interview_ws(websocket: WebSocket):
                     continue
 
                 question = questions[current_index] if 0 <= current_index < len(questions) else ""
-                answer_text = await stt_stream.flush_answer()
+                try:
+                    answer_text = await stt_stream.flush_answer()
+                except Exception as e:
+                    # Most commonly: STT provider rate-limited (429). Keep the session alive and let the user retry.
+                    await websocket.send_text(_safe_json({"type": "error", "message": f"Could not transcribe answer: {str(e)}"}))
+                    continue
                 await store.append_transcript(
                     session_id,
                     question_index=current_index,

@@ -9,7 +9,7 @@ python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
 copy .env.example .env
-python -m uvicorn app.main:app --reload --port 8000
+python -m uvicorn main:app --reload --port 8000
 ```
 
 API docs: `http://localhost:8000/docs`
@@ -17,7 +17,13 @@ API docs: `http://localhost:8000/docs`
 ### Production command
 
 ```bash
-gunicorn -k uvicorn.workers.UvicornWorker -w 4 -b 0.0.0.0:8000 app.main:app
+uvicorn main:app --host 0.0.0.0 --port $PORT
+```
+
+### Optional: Gunicorn (Linux)
+
+```bash
+gunicorn -k uvicorn.workers.UvicornWorker -w 4 -b 0.0.0.0:${PORT:-8000} main:app
 ```
 
 ### Optional PostgreSQL

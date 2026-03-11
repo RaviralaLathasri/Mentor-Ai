@@ -10,6 +10,7 @@ Student learning wellness monitoring:
 - Get learning recommendations
 """
 
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -25,6 +26,7 @@ from app.schemas import (
 from app.services import WeaknessAnalyzerService
 
 router = APIRouter(prefix="/api/analyze", tags=["Learning Wellness"])
+logger = logging.getLogger(__name__)
 
 
 @router.get("/quiz-question", response_model=QuizQuestionResponse)
@@ -44,7 +46,7 @@ def get_quiz_question(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        print(f"[ERROR] get_quiz_question: {str(e)} | student_id={student_id}")
+        logger.exception("get_quiz_question failed (student_id=%s)", student_id)
         raise HTTPException(status_code=500, detail="Error generating quiz question")
 
 
@@ -78,7 +80,7 @@ def analyze_quiz_result(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        print(f"[ERROR] analyze_quiz_result: {str(e)} | student_id={answer.student_id}")
+        logger.exception("analyze_quiz_result failed (student_id=%s)", answer.student_id)
         raise HTTPException(status_code=500, detail="Error analyzing quiz result")
 
 
@@ -103,7 +105,7 @@ def analyze_quiz_attempt(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        print(f"[ERROR] analyze_quiz_attempt: {str(e)} | student_id={attempt.student_id}")
+        logger.exception("analyze_quiz_attempt failed (student_id=%s)", attempt.student_id)
         raise HTTPException(status_code=500, detail="Error analyzing quiz attempt")
 
 
@@ -138,5 +140,5 @@ def get_weakest_concepts(
         }
 
     except Exception as e:
-        print(f"[ERROR] get_weakest_concepts: {str(e)} | student_id={student_id}")
+        logger.exception("get_weakest_concepts failed (student_id=%s)", student_id)
         raise HTTPException(status_code=500, detail="Error retrieving weakest concepts")

@@ -10,6 +10,8 @@ Features:
 - Follow-up guiding questions
 """
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -18,6 +20,7 @@ from app.schemas import MentorQueryRequest, MentorResponseData
 from app.services import MentorAIService
 
 router = APIRouter(prefix="/api/mentor", tags=["AI Mentor"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/respond", response_model=MentorResponseData)
@@ -67,8 +70,7 @@ def get_mentor_response(
         )
 
     except ValueError as e:
-        print(f"[ERROR] get_mentor_response: {str(e)} | student_id={query.student_id}")
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        print(f"[ERROR] get_mentor_response: {str(e)} | student_id={query.student_id}")
+        logger.exception("get_mentor_response failed (student_id=%s)", query.student_id)
         raise HTTPException(status_code=500, detail="Error generating mentor response")

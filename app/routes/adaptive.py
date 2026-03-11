@@ -10,6 +10,8 @@ Features:
 - Monitor adaptation progress
 """
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -24,6 +26,7 @@ from app.schemas import (
 from app.services import AdaptiveLearningService
 
 router = APIRouter(prefix="/api/adaptive", tags=["Adaptive Learning"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/session", response_model=SessionResponse)
@@ -49,10 +52,9 @@ def create_session(
         return SessionResponse.model_validate(session)
 
     except ValueError as e:
-        print(f"[ERROR] create_session: {str(e)} | student_id={session_data.student_id}")
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        print(f"[ERROR] create_session: {str(e)}")
+        logger.exception("create_session failed (student_id=%s)", session_data.student_id)
         raise HTTPException(status_code=500, detail="Error creating session")
 
 
@@ -80,7 +82,7 @@ def get_adaptive_status(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        print(f"[ERROR] get_adaptive_status: {str(e)} | student_id={student_id}")
+        logger.exception("get_adaptive_status failed (student_id=%s)", student_id)
         raise HTTPException(status_code=500, detail="Error retrieving adaptive status")
 
 
@@ -112,7 +114,7 @@ def get_learning_recommendations(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        print(f"[ERROR] get_learning_recommendations: {str(e)} | student_id={student_id}")
+        logger.exception("get_learning_recommendations failed (student_id=%s)", student_id)
         raise HTTPException(status_code=500, detail="Error generating recommendations")
 
 
@@ -140,5 +142,5 @@ def generate_study_plan(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        print(f"[ERROR] generate_study_plan: {str(e)} | student_id={request.student_id}")
+        logger.exception("generate_study_plan failed (student_id=%s)", request.student_id)
         raise HTTPException(status_code=500, detail="Error generating study plan")

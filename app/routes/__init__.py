@@ -15,10 +15,6 @@ All routers organized by feature:
 - career: Career roadmap generation
 - interview: Mock interview generation/playback
 - audio_interview: Live audio interview (WebSockets + Redis, no audio storage)
-- quiz: Quiz management (legacy)
-- students: Student records (legacy)
-- mentor: Mentor chat (legacy)
-- feedback: Feedback (legacy)
 """
 
 from . import profiles

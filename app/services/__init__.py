@@ -7,6 +7,7 @@ all current service classes in one module to preserve existing imports.
 
 from __future__ import annotations
 
+import logging
 import os
 import random
 import re
@@ -44,6 +45,8 @@ from app.services.resume_insights import (
     keyword_gap_analysis,
 )
 from app.utils.openai_client import get_openai_client
+
+logger = logging.getLogger(__name__)
 
 
 def _coerce_difficulty(value: Optional[object], default: DifficultyLevel = DifficultyLevel.MEDIUM) -> DifficultyLevel:
@@ -1807,13 +1810,14 @@ class MentorAIService:
                         MentorAIService._llm_backoff_until = time.time() + 180
                         break
         except Exception as e:
-            print(f"[WARN] LLM client init failed; falling back to local templates. Error: {e}")
+            logger.warning("LLM client init failed; falling back to local templates. Error=%s", str(e))
             return None
 
         if errors:
-            print("[WARN] LLM response failed; falling back to local templates.")
-            for item in errors:
-                print(f"[WARN] model_error: {item}")
+            # Keep it compact (avoid spewing many lines into dev terminals).
+            compact = "; ".join(errors[:5])
+            suffix = " ..." if len(errors) > 5 else ""
+            logger.warning("LLM response failed; falling back to local templates. Errors=%s%s", compact, suffix)
 
         return None
 

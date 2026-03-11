@@ -44,7 +44,7 @@ python -m venv venv
 venv\Scripts\activate
 pip install -r requirements.txt
 copy .env.example .env
-python -m uvicorn app.main:app --reload --port 8000
+python -m uvicorn main:app --reload --port 8000
 ```
 
 Backend docs: `http://localhost:8000/docs`
@@ -82,5 +82,18 @@ OPENAI_API_MODEL=openrouter/auto
 ```
 
 ## Deployment
+
+### Production start command
+
+```bash
+uvicorn main:app --host 0.0.0.0 --port $PORT
+```
+
+### Docker (backend)
+
+```bash
+docker build -t mentor-ai-backend .
+docker run --rm -p 8000:8000 -e PORT=8000 --env-file .env mentor-ai-backend
+```
 
 See [DEPLOYMENT_READY_GUIDE.md](DEPLOYMENT_READY_GUIDE.md) for production deployment steps.

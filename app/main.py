@@ -6,7 +6,19 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import init_db
-from app.routes import adaptive, analytics, audio_interview, career, explain_mistakes, feedback_loop, interview, mentor_ai, profiles, resume, wellness
+from app.routes import (
+    adaptive,
+    analytics,
+    audio_interview,
+    career,
+    explain_mistakes,
+    feedback_loop,
+    interview,
+    mentor_ai,
+    profiles,
+    resume,
+    wellness,
+)
 
 app = FastAPI(
     title="AI Mentor System",
@@ -16,8 +28,8 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-allowed_origins = os.getenv("CORS_ALLOW_ORIGINS", "*")
-origins = [item.strip() for item in allowed_origins.split(",") if item.strip()]
+cors_allow_origins = os.getenv("CORS_ALLOW_ORIGINS", "*")
+origins = [item.strip() for item in cors_allow_origins.split(",") if item.strip()]
 if not origins:
     origins = ["*"]
 

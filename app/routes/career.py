@@ -1,5 +1,7 @@
 """Career roadmap generation endpoints."""
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -12,6 +14,7 @@ from app.schemas import (
 from app.services.career_roadmap import CareerRoadmapService
 
 router = APIRouter(prefix="/api/career", tags=["Career Roadmap"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/roadmap/generate", response_model=CareerRoadmapResponse)
@@ -31,7 +34,7 @@ def generate_career_roadmap(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        print(f"[ERROR] generate_career_roadmap: {str(e)} | role={request.role}")
+        logger.exception("generate_career_roadmap failed (role=%s)", request.role)
         raise HTTPException(status_code=500, detail="Error generating career roadmap")
 
 
@@ -65,5 +68,5 @@ def get_career_roadmap(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        print(f"[ERROR] get_career_roadmap: {str(e)} | role={role}")
+        logger.exception("get_career_roadmap failed (role=%s)", role)
         raise HTTPException(status_code=500, detail="Error retrieving career roadmap")

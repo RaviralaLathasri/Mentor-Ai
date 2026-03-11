@@ -10,6 +10,8 @@ Features:
 - Prevent future similar mistakes
 """
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -18,6 +20,7 @@ from app.schemas import ExplainMistakeRequest, MistakeExplanation
 from app.services import WeaknessAnalyzerService
 
 router = APIRouter(prefix="/api/explain", tags=["Mistake Explanation"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/mistake", response_model=MistakeExplanation)
@@ -61,7 +64,7 @@ def explain_mistake(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        print(f"[ERROR] explain_mistake: {str(e)} | student_id={request.student_id}")
+        logger.exception("explain_mistake failed (student_id=%s)", request.student_id)
         raise HTTPException(status_code=500, detail="Error explaining mistake")
 
 
@@ -96,5 +99,5 @@ def check_misconception(
         }
 
     except Exception as e:
-        print(f"[ERROR] check_misconception: {str(e)} | student_id={student_id}")
+        logger.exception("check_misconception failed (student_id=%s)", student_id)
         raise HTTPException(status_code=500, detail="Error checking misconception")

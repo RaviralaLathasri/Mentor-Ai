@@ -55,6 +55,11 @@ class GroqWhisperSTTService:
         self._api_key = (os.getenv("GROQ_API_KEY") or "").strip()
         self._base_url = (os.getenv("GROQ_API_BASE") or "https://api.groq.com/openai/v1").rstrip("/")
         self._model = (os.getenv("GROQ_WHISPER_MODEL") or "whisper-large-v3").strip()
+        # Lower temperature reduces hallucinations.
+        try:
+            self._temperature = float(os.getenv("GROQ_WHISPER_TEMPERATURE", "0") or "0")
+        except Exception:
+            self._temperature = 0.0
 
     def enabled(self) -> bool:
         return bool(self._api_key)
@@ -65,7 +70,7 @@ class GroqWhisperSTTService:
 
         url = f"{self._base_url}/audio/transcriptions"
         headers = {"Authorization": f"Bearer {self._api_key}"}
-        data = {"model": self._model}
+        data = {"model": self._model, "temperature": self._temperature}
         if language:
             data["language"] = language
 
@@ -79,4 +84,3 @@ class GroqWhisperSTTService:
             payload = resp.json() if resp.content else {}
             text = (payload.get("text") or "").strip() if isinstance(payload, dict) else ""
             return text
-

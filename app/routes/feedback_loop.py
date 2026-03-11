@@ -10,6 +10,8 @@ Features:
 - Confidence tracking
 """
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -18,6 +20,7 @@ from app.schemas import FeedbackSubmit, FeedbackResponse
 from app.services import FeedbackService
 
 router = APIRouter(prefix="/api/feedback", tags=["Feedback Loop"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/submit", response_model=FeedbackResponse)
@@ -70,7 +73,7 @@ def submit_feedback(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        print(f"[ERROR] submit_feedback: {str(e)} | student_id={feedback.student_id}")
+        logger.exception("submit_feedback failed (student_id=%s)", feedback.student_id)
         raise HTTPException(status_code=500, detail="Error submitting feedback")
 
 
@@ -114,5 +117,5 @@ def rate_response(
         }
 
     except Exception as e:
-        print(f"[ERROR] rate_response: {str(e)} | student_id={student_id}")
+        logger.exception("rate_response failed (student_id=%s)", student_id)
         raise HTTPException(status_code=500, detail="Error rating response")

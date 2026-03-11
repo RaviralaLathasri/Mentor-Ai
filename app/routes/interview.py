@@ -1,5 +1,7 @@
 """Mock interview endpoints."""
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -12,6 +14,7 @@ from app.schemas import (
 from app.services.interview import MockInterviewService
 
 router = APIRouter(prefix="/api/interview", tags=["Mock Interview"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/mock", response_model=MockInterviewResponse)
@@ -29,7 +32,7 @@ def run_mock_interview(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        print(f"[ERROR] run_mock_interview: {str(e)} | student_id={request.student_id}")
+        logger.exception("run_mock_interview failed (student_id=%s)", request.student_id)
         raise HTTPException(status_code=500, detail="Error running mock interview")
 
 
@@ -49,7 +52,7 @@ def get_student_mock_interview_history(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        print(f"[ERROR] get_student_mock_interview_history: {str(e)} | student_id={student_id}")
+        logger.exception("get_student_mock_interview_history failed (student_id=%s)", student_id)
         raise HTTPException(status_code=500, detail="Error retrieving mock interview history")
 
 
@@ -68,5 +71,5 @@ def get_mock_interview_playback(
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        print(f"[ERROR] get_mock_interview_playback: {str(e)} | session_id={session_id}")
+        logger.exception("get_mock_interview_playback failed (session_id=%s)", session_id)
         raise HTTPException(status_code=500, detail="Error retrieving mock interview playback")

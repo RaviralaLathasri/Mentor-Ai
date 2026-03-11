@@ -1,24 +1,39 @@
-# Python cache files
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
+*.pyd
+*.so
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# Virtual environment
+# Virtual environments
 venv/
 env/
+.venv/
 
-# Environment variables
-.env
+# Environment / secrets
+.env*
+!.env.example
 
-# VS Code settings
-.vscode/
-
-# Node modules (for React)
-node_modules/
-frontend/dist/
+# Databases / local state
+*.db
+*.sqlite
+*.sqlite3
 
 # Logs
 *.log
 
-# Local dev tooling (ignored)
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Frontend build artifacts
+node_modules/
+frontend/dist/
+
+# Local dev tooling
 .dev/

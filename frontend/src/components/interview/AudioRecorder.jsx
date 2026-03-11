@@ -1,5 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 
+function withTimeout(promise, ms) {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error("mic-timeout")), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutId) clearTimeout(timeoutId);
+  });
+}
+
 function downsampleBuffer(buffer, inputSampleRate, outputSampleRate) {
   if (outputSampleRate === inputSampleRate) return buffer;
   if (outputSampleRate > inputSampleRate) return buffer;
@@ -36,7 +46,7 @@ function floatTo16BitPCM(float32Array) {
   return buffer;
 }
 
-export default function AudioRecorder({ wsRef, enabled, onError }) {
+export default function AudioRecorder({ wsRef, enabled, deviceId = "", onError }) {
   const [status, setStatus] = useState("idle");
   const [level, setLevel] = useState(0);
 
@@ -81,14 +91,54 @@ export default function AudioRecorder({ wsRef, enabled, onError }) {
 
     try {
       setStatus("requesting-mic");
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-        video: false,
-      });
+
+      // If the browser exposes permissions, surface clear guidance when blocked.
+      try {
+        if (navigator?.permissions?.query) {
+          const perm = await navigator.permissions.query({ name: "microphone" });
+          if (perm?.state === "denied") {
+            setStatus("idle");
+            onError?.("Microphone is blocked for this site. Click the lock icon in the address bar, allow Microphone, then refresh.");
+            return;
+          }
+        }
+      } catch {
+        // ignore (Permissions API not available)
+      }
+
+      const audioConstraints = {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      };
+      if (deviceId) {
+        audioConstraints.deviceId = { exact: deviceId };
+      }
+
+      let stream;
+      try {
+        // On some systems, the permission prompt can get "stuck" (user doesn't see it).
+        // Show a better error after a short timeout instead of blinking forever.
+        stream = await withTimeout(navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false }), 12000);
+      } catch (e) {
+        // If the selected device can't be opened (common if unplugged), fall back to default.
+        if (deviceId) {
+          try {
+            stream = await withTimeout(
+              navigator.mediaDevices.getUserMedia({
+                audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+                video: false,
+              }),
+              12000,
+            );
+            onError?.("Could not open the selected microphone. Using the default device instead.");
+          } catch {
+            throw e;
+          }
+        } else {
+          throw e;
+        }
+      }
       streamRef.current = stream;
 
       setStatus("recording");
@@ -140,7 +190,18 @@ export default function AudioRecorder({ wsRef, enabled, onError }) {
       processor.connect(audioContext.destination);
     } catch (e) {
       setStatus("idle");
-      onError?.("Microphone permission denied or unavailable.");
+      const name = e?.name || "";
+      if (String(e?.message || "") === "mic-timeout") {
+        onError?.("Microphone permission is pending. Check your browser address bar for the microphone allow/deny prompt, then click Allow and try again.");
+      } else if (name === "NotAllowedError" || name === "SecurityError") {
+        onError?.("Microphone permission denied. Allow microphone access for this site and refresh.");
+      } else if (name === "NotFoundError") {
+        onError?.("No microphone device found. Plug in a microphone or enable it in Windows Sound settings.");
+      } else if (name === "NotReadableError") {
+        onError?.("Microphone is busy/unavailable. Close other apps using the mic (Zoom/Teams/Recorder), then try again.");
+      } else {
+        onError?.("Microphone permission denied or unavailable.");
+      }
     }
   };
 
@@ -150,8 +211,7 @@ export default function AudioRecorder({ wsRef, enabled, onError }) {
       return () => stop();
     }
     stop();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [enabled]);
+  }, [enabled, deviceId]);
 
   return (
     <div className="inline-status">

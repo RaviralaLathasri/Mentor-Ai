@@ -4,6 +4,7 @@ routes/resume.py
 Resume upload and AI mentoring endpoints.
 """
 
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
@@ -14,6 +15,7 @@ from app.schemas import ResumeMentorResponse
 from app.services import ResumeMentorService
 
 router = APIRouter(prefix="/api/resume", tags=["Resume Mentor"])
+logger = logging.getLogger(__name__)
 
 
 @router.post("/analyze", response_model=ResumeMentorResponse)
@@ -37,5 +39,5 @@ async def analyze_resume(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        print(f"[ERROR] analyze_resume: {str(e)}")
+        logger.exception("analyze_resume failed")
         raise HTTPException(status_code=500, detail="Error analyzing resume")
