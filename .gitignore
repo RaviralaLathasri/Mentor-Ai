@@ -216,6 +216,15 @@ dist/
 dump.rdb
 appendonly.aof
 
+# Backend build output
+build/
+dist/
+*.egg-info/
+
+# Redis
+dump.rdb
+appendonly.aof
+
 # Databases / local state
 *.db
 *.sqlite
