@@ -193,22 +193,25 @@ Mentor-Ai/
 │   ├── requirements.txt             # Python dependencies
 │   ├── logging.json                 # Logging configuration
 │   │
+│   ├── docs/                        # Additional documentation
+│   │   ├── ARCHITECTURE.md          # Technical architecture details
+│   │   ├── ARCHITECTURE_VISUAL.md   # Visual architecture diagrams
+│   │   ├── QUICKSTART.md            # Quick start guide
+│   │   ├── DEPLOYMENT_GUIDE.md      # Deployment instructions
+│   │   ├── DEPLOYMENT_READY_GUIDE.md # Production checklist
+│   │   ├── DEVELOPER_REFERENCE.md   # Developer API reference
+│   │   ├── PROFILE_DATA_USAGE.md    # Data privacy & usage
+│   │   ├── DOCUMENTATION_INDEX.md   # Documentation index
+│   │   ├── COMPLETION_CHECKLIST.md  # Feature completion status
+│   │   ├── PROJECT_DELIVERY.md      # Project delivery status
+│   │   ├── STATUS.md                # Current status
+│   │   └── INDEX.md                 # Project index
+│   │
 │   └── Documentation Files
 │       ├── README.md                # This file
-│       ├── ARCHITECTURE.md          # Technical architecture details
-│       ├── ARCHITECTURE_VISUAL.md   # Visual architecture diagrams
-│       ├── QUICKSTART.md            # Quick start guide
-│       ├── DEPLOYMENT_GUIDE.md      # Deployment instructions
-│       ├── DEPLOYMENT_READY_GUIDE.md # Production checklist
-│       ├── DEVELOPER_REFERENCE.md   # Developer API reference
-│       ├── PROFILE_DATA_USAGE.md    # Data privacy & usage
-│       ├── DOCUMENTATION_INDEX.md   # Documentation index
-│       ├── COMPLETION_CHECKLIST.md  # Feature completion status
-│       ├── PROJECT_DELIVERY.md      # Project delivery status
-│       ├── STATUS.md                # Current status
-│       └── INDEX.md                 # Project index
+│       └── CONTRIBUTING.md          # Contributing guidelines
 │
-└── Test Files
+└── tests/                           # Automated test suite
     ├── test_api.py                  # API endpoint tests
     ├── test_chatbot_fixed.py        # Chatbot tests
     ├── test_chatbot_variety.py      # Chatbot variety tests
@@ -524,7 +527,7 @@ SQLite/PostgreSQL
 └─────────────────────────────────────────────┘
 ```
 
-For detailed architecture documentation, see [ARCHITECTURE.md](ARCHITECTURE.md)
+For detailed architecture documentation, see [ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ---
 
@@ -668,7 +671,7 @@ cp -r dist/* ../public/
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-For detailed deployment instructions, see [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)
+For detailed deployment instructions, see [DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md)
 
 ---
 
@@ -678,10 +681,10 @@ For detailed deployment instructions, see [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE
 
 ```bash
 # Run all tests
-pytest
+pytest tests/
 
 # Run specific test file
-pytest test_api.py -v
+pytest tests/test_api.py -v
 
 # Run with coverage
 pytest --cov=app tests/
@@ -744,14 +747,14 @@ git push origin feature/your-feature
 
 ## 📖 Additional Documentation
 
-- [QUICKSTART.md](QUICKSTART.md) - Quick start guide
-- [FEATURES.md](FEATURES.md) - Comprehensive feature list
+- [QUICKSTART.md](docs/QUICKSTART.md) - Quick start guide
+- [FEATURES.md](docs/FEATURES.md) - Comprehensive feature list
 - [CONTRIBUTING.md](CONTRIBUTING.md) - Contributing guidelines
-- [ARCHITECTURE.md](ARCHITECTURE.md) - Technical architecture
-- [ARCHITECTURE_VISUAL.md](ARCHITECTURE_VISUAL.md) - Visual diagrams
-- [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) - Deployment instructions
-- [DEVELOPER_REFERENCE.md](DEVELOPER_REFERENCE.md) - API reference
-- [PROFILE_DATA_USAGE.md](PROFILE_DATA_USAGE.md) - Data privacy
+- [ARCHITECTURE.md](docs/ARCHITECTURE.md) - Technical architecture
+- [ARCHITECTURE_VISUAL.md](docs/ARCHITECTURE_VISUAL.md) - Visual diagrams
+- [DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md) - Deployment instructions
+- [DEVELOPER_REFERENCE.md](docs/DEVELOPER_REFERENCE.md) - API reference
+- [PROFILE_DATA_USAGE.md](docs/PROFILE_DATA_USAGE.md) - Data privacy
 
 ---
 
@@ -919,5 +922,5 @@ docker run --rm -p 8000:8000 -e PORT=8000 --env-file .env mentor-ai-backend
 
 When deployed with the root `Dockerfile`, the build also compiles the React app and the backend serves it from `/` (API stays under `/api`).
 
-See [DEPLOYMENT_READY_GUIDE.md](DEPLOYMENT_READY_GUIDE.md) for production deployment steps.
+See [DEPLOYMENT_READY_GUIDE.md](docs/DEPLOYMENT_READY_GUIDE.md) for production deployment steps.
 >>>>>>> origin/main
