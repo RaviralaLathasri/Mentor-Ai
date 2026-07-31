@@ -337,28 +337,30 @@ def init_db():
     """
     Base.metadata.create_all(bind=engine)
     
+    from sqlalchemy import inspect
+    inspector = inspect(engine)
+    
     # Schema upgrade: add any missing columns to existing tables
     with engine.connect() as conn:
         # Check and add missing columns to feedback table
-        result = conn.execute(text("PRAGMA table_info(feedbacks)"))
-        existing_cols = {row[1] for row in result.fetchall()}
-        
-        missing_cols = [
-            ("comments", "TEXT"),
-            ("rating", "FLOAT"),
-            ("focus_concept", "VARCHAR")
-        ]
-        
-        for col_name, col_type in missing_cols:
-            if col_name not in existing_cols:
-                conn.execute(text(f"ALTER TABLE feedbacks ADD COLUMN {col_name} {col_type}"))
+        if inspector.has_table("feedbacks"):
+            existing_cols = {col["name"] for col in inspector.get_columns("feedbacks")}
+            
+            missing_cols = [
+                ("comments", "TEXT"),
+                ("rating", "FLOAT"),
+                ("focus_concept", "VARCHAR")
+            ]
+            
+            for col_name, col_type in missing_cols:
+                if col_name not in existing_cols:
+                    conn.execute(text(f"ALTER TABLE feedbacks ADD COLUMN {col_name} {col_type}"))
 
-        # Backward compatibility: if mock interview table exists from an older
-        # version, ensure the optional duration column is present.
-        mock_cols_result = conn.execute(text("PRAGMA table_info(mock_interview_sessions)"))
-        mock_cols = {row[1] for row in mock_cols_result.fetchall()}
-        if mock_cols and "duration" not in mock_cols:
-            conn.execute(text("ALTER TABLE mock_interview_sessions ADD COLUMN duration VARCHAR"))
+        # Backward compatibility: if mock interview table exists, ensure the optional duration column is present.
+        if inspector.has_table("mock_interview_sessions"):
+            existing_mock_cols = {col["name"] for col in inspector.get_columns("mock_interview_sessions")}
+            if "duration" not in existing_mock_cols:
+                conn.execute(text("ALTER TABLE mock_interview_sessions ADD COLUMN duration VARCHAR"))
         
         conn.commit()
 
