@@ -34,6 +34,11 @@ DATABASE_URL = os.getenv(
     "sqlite:///./mentor_ai.db"
 )
 
+# SQLAlchemy 1.4+ deprecated 'postgres://' in favor of 'postgresql://'.
+# We normalize it here so Vercel Postgres and Heroku connection strings work out-of-the-box.
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
 engine = create_engine(
     DATABASE_URL,
     connect_args={"check_same_thread": False} if "sqlite" in DATABASE_URL else {},
