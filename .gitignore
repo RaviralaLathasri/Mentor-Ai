@@ -37,3 +37,4 @@ frontend/dist/
 
 # Local dev tooling
 .dev/
+.vercel

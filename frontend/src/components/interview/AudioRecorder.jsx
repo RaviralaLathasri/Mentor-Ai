@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { Mic, MicOff, AlertCircle } from "lucide-react";
 
 function withTimeout(promise, ms) {
   let timeoutId;
@@ -22,13 +23,13 @@ function downsampleBuffer(buffer, inputSampleRate, outputSampleRate) {
   let offsetBuffer = 0;
   while (offsetResult < result.length) {
     const nextOffsetBuffer = Math.round((offsetResult + 1) * sampleRateRatio);
-    let accum = 0;
+    let dbAccum = 0;
     let count = 0;
     for (let i = offsetBuffer; i < nextOffsetBuffer && i < buffer.length; i++) {
-      accum += buffer[i];
+      dbAccum += buffer[i];
       count++;
     }
-    result[offsetResult] = count ? accum / count : 0;
+    result[offsetResult] = count ? dbAccum / count : 0;
     offsetResult++;
     offsetBuffer = nextOffsetBuffer;
   }
@@ -40,7 +41,6 @@ function floatTo16BitPCM(float32Array) {
   const view = new DataView(buffer);
   for (let i = 0; i < float32Array.length; i++) {
     let s = Math.max(-1, Math.min(1, float32Array[i]));
-    // Scale to int16
     view.setInt16(i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
   }
   return buffer;
@@ -92,7 +92,6 @@ export default function AudioRecorder({ wsRef, enabled, deviceId = "", onError }
     try {
       setStatus("requesting-mic");
 
-      // If the browser exposes permissions, surface clear guidance when blocked.
       try {
         if (navigator?.permissions?.query) {
           const perm = await navigator.permissions.query({ name: "microphone" });
@@ -103,7 +102,7 @@ export default function AudioRecorder({ wsRef, enabled, deviceId = "", onError }
           }
         }
       } catch {
-        // ignore (Permissions API not available)
+        // ignore
       }
 
       const audioConstraints = {
@@ -117,11 +116,8 @@ export default function AudioRecorder({ wsRef, enabled, deviceId = "", onError }
 
       let stream;
       try {
-        // On some systems, the permission prompt can get "stuck" (user doesn't see it).
-        // Show a better error after a short timeout instead of blinking forever.
         stream = await withTimeout(navigator.mediaDevices.getUserMedia({ audio: audioConstraints, video: false }), 12000);
       } catch (e) {
-        // If the selected device can't be opened (common if unplugged), fall back to default.
         if (deviceId) {
           try {
             stream = await withTimeout(
@@ -146,7 +142,6 @@ export default function AudioRecorder({ wsRef, enabled, deviceId = "", onError }
       const audioContext = new AudioCtx();
       audioContextRef.current = audioContext;
       try {
-        // Some browsers start AudioContext in "suspended" until a user gesture; resume is safe regardless.
         await audioContext.resume();
       } catch {
         // ignore
@@ -155,7 +150,6 @@ export default function AudioRecorder({ wsRef, enabled, deviceId = "", onError }
       const source = audioContext.createMediaStreamSource(stream);
       sourceRef.current = source;
 
-      // ScriptProcessor is deprecated but remains broadly supported.
       const processor = audioContext.createScriptProcessor(4096, 1, 1);
       processorRef.current = processor;
 
@@ -165,7 +159,6 @@ export default function AudioRecorder({ wsRef, enabled, deviceId = "", onError }
             return;
           }
           const input = event.inputBuffer.getChannelData(0);
-          // Basic level meter (RMS). Rate-limit state updates to avoid re-rendering too often.
           let sum = 0;
           for (let i = 0; i < input.length; i++) {
             const v = input[i];
@@ -173,7 +166,7 @@ export default function AudioRecorder({ wsRef, enabled, deviceId = "", onError }
           }
           const rms = Math.sqrt(sum / Math.max(1, input.length));
           const now = performance.now();
-          if (now - lastLevelUpdateRef.current > 200) {
+          if (now - lastLevelUpdateRef.current > 100) {
             lastLevelUpdateRef.current = now;
             setLevel(rms);
           }
@@ -182,7 +175,7 @@ export default function AudioRecorder({ wsRef, enabled, deviceId = "", onError }
           const pcm16 = floatTo16BitPCM(downsampled);
           wsRef.current.send(pcm16);
         } catch {
-          // ignore transient audio errors
+          // ignore
         }
       };
 
@@ -213,14 +206,38 @@ export default function AudioRecorder({ wsRef, enabled, deviceId = "", onError }
     stop();
   }, [enabled, deviceId]);
 
+  const pcmPercent = Math.min(100, Math.round(Math.min(1, Math.max(0, level * 5)) * 100));
+
   return (
-    <div className="inline-status">
-      <strong>Status:</strong> {status}
-      {status === "recording" ? (
-        <span className="muted" style={{ marginLeft: 10 }}>
-          Level: {Math.round(Math.min(1, Math.max(0, level)) * 100)}%
-        </span>
-      ) : null}
+    <div className="flex items-center gap-4 p-4 bg-slate-50 border border-brand-border rounded-xl">
+      <div className="flex items-center gap-2">
+        <div className={`w-8 h-8 rounded-full flex items-center justify-center ${
+          status === "recording" ? "bg-brand-primaryLight text-brand-primary animate-pulse" : "bg-slate-200 text-slate-500"
+        }`}>
+          {status === "recording" ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
+        </div>
+        <div className="text-xs">
+          <span className="font-semibold block text-brand-textPrimary capitalize">Microphone: {status.replace("-", " ")}</span>
+          <span className="text-brand-textSecondary text-[10px]">
+            {status === "recording" ? "Voice streaming active" : "Mic stream is paused"}
+          </span>
+        </div>
+      </div>
+      
+      {status === "recording" && (
+        <div className="flex-1 max-w-[150px] space-y-1">
+          <div className="flex justify-between text-[9px] uppercase font-bold text-brand-textSecondary">
+            <span>Level</span>
+            <span>{pcmPercent}%</span>
+          </div>
+          <div className="h-1.5 w-full bg-slate-200 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-brand-primary rounded-full transition-all duration-75"
+              style={{ width: `${pcmPercent}%` }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 }
