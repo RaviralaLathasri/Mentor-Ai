@@ -74,11 +74,10 @@ If you see this warning, the app is using local fallback templates:
 [WARN] LLM response failed; falling back to local templates.
 ```
 
-Recommended OpenRouter env values:
+Recommended Gemini env values:
 
 ```env
-OPENAI_API_BASE=https://openrouter.ai/api/v1
-OPENAI_API_MODEL=openrouter/auto
+GEMINI_API_KEY=your_gemini_api_key_here
 ```
 
 ## Deployment

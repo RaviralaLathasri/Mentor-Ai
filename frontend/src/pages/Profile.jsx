@@ -1,285 +1,347 @@
-import { useEffect, useState } from "react";
-import { UserCheck, Award, Target, BookOpen, AlertTriangle } from "lucide-react";
-
-import Notice from "../components/Notice";
-import PageShell from "../components/PageShell";
-import StudentBanner from "../components/StudentBanner";
-import useStudentId from "../hooks/useStudentId";
+import React, { useEffect, useState } from "react";
+import { useAuth } from "../context/AuthContext";
 import { profileApi } from "../services/api";
+import PageShell from "../components/PageShell";
+import Notice from "../components/Notice";
+import LoadingSpinner from "../components/LoadingSpinner";
+import { User, Award, BookOpen, Target, Sliders, Edit3, X, Mail } from "lucide-react";
 
-const defaultForm = {
-  name: "",
-  email: "",
-  skills: "",
-  interests: "",
-  goals: "",
-  confidence_level: 0.5,
-  preferred_difficulty: "medium",
-};
-
-export default function StudentProfile() {
-  const [studentId, setStudentId] = useStudentId();
-  const [form, setForm] = useState(defaultForm);
-  const [manualId, setManualId] = useState("");
-  const [loading, setLoading] = useState(false);
+export default function Profile() {
+  const { user } = useAuth();
+  const [profile, setProfile] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [editMode, setEditMode] = useState(false);
+  
+  // Edit Form Fields
+  const [skills, setSkills] = useState("");
+  const [interests, setInterests] = useState("");
+  const [goals, setGoals] = useState("");
+  const [confidence, setConfidence] = useState(0.5);
+  const [difficulty, setDifficulty] = useState("medium");
   const [saving, setSaving] = useState(false);
   const [notice, setNotice] = useState({ type: "info", message: "" });
 
-  useEffect(() => {
-    if (!studentId) {
-      setForm(defaultForm);
-      return;
-    }
-
-    const load = async () => {
-      setLoading(true);
-      try {
-        const [student, profile] = await Promise.all([
-          profileApi.getStudent(studentId),
-          profileApi.getProfile(studentId),
-        ]);
-
-        setForm({
-          name: student.name,
-          email: student.email,
-          skills: (profile.skills || []).join(", "),
-          interests: (profile.interests || []).join(", "),
-          goals: profile.goals || "",
-          confidence_level: profile.confidence_level ?? 0.5,
-          preferred_difficulty: profile.preferred_difficulty || "medium",
-        });
-      } catch (error) {
-        setNotice({ type: "error", message: error.message });
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    load();
-  }, [studentId]);
-
-  const handleChange = (event) => {
-    const { name, value } = event.target;
-    setForm((previous) => ({ ...previous, [name]: value }));
-  };
-
-  const clearStudent = () => {
-    setStudentId(null);
-    setForm(defaultForm);
-    setNotice({ type: "info", message: "Student context cleared." });
-  };
-
-  const loadManualStudent = async () => {
-    const parsed = Number(manualId);
-    if (!parsed) {
-      setNotice({ type: "error", message: "Enter a valid student ID." });
-      return;
-    }
-
-    setStudentId(parsed);
-    setNotice({ type: "success", message: `Loaded student ${parsed}.` });
-  };
-
-  const handleSubmit = async (event) => {
-    event.preventDefault();
-
-    const payload = {
-      skills: form.skills
-        .split(",")
-        .map((item) => item.trim())
-        .filter(Boolean),
-      interests: form.interests
-        .split(",")
-        .map((item) => item.trim())
-        .filter(Boolean),
-      goals: form.goals,
-      confidence_level: Number(form.confidence_level),
-      preferred_difficulty: form.preferred_difficulty,
-    };
-
-    setSaving(true);
+  const loadProfile = async () => {
+    setLoading(true);
     try {
-      let activeStudentId = studentId;
+      const data = await profileApi.getProfileMe();
+      setProfile(data);
+      setSkills(data.skills ? data.skills.join(", ") : "");
+      setInterests(data.interests ? data.interests.join(", ") : "");
+      setGoals(data.goals || "");
+      setConfidence(data.confidence_level ?? 0.5);
+      setDifficulty(data.preferred_difficulty || "medium");
+    } catch (err) {
+      setError("Unable to load profile. Please complete onboarding.");
+    } finally {
+      setLoading(false);
+    }
+  };
 
-      if (!activeStudentId) {
-        const created = await profileApi.createStudent({
-          name: form.name,
-          email: form.email,
-        });
-        activeStudentId = created.id;
-        setStudentId(activeStudentId);
-      }
+  useEffect(() => {
+    loadProfile();
+  }, []);
 
-      await profileApi.updateProfile(activeStudentId, payload);
-      setNotice({ type: "success", message: `Profile saved for student ${activeStudentId}.` });
-    } catch (error) {
-      setNotice({ type: "error", message: error.message });
+  const handleUpdate = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    setNotice({ type: "info", message: "" });
+    try {
+      const payload = {
+        skills: skills ? skills.split(",").map(s => s.trim()).filter(Boolean) : [],
+        interests: interests ? interests.split(",").map(i => i.trim()).filter(Boolean) : [],
+        goals,
+        confidence_level: Number(confidence),
+        preferred_difficulty: difficulty,
+      };
+
+      const updated = await profileApi.updateProfileMe(payload);
+      setProfile(updated);
+      setEditMode(false);
+      setNotice({ type: "success", message: "Profile updated successfully!" });
+    } catch (err) {
+      setNotice({ type: "error", message: err.message || "Failed to update profile." });
     } finally {
       setSaving(false);
     }
   };
 
-  return (
-    <PageShell title="Profile Manager" subtitle="Personalize your core skills, targets, confidence metrics, and difficulty ranges.">
-      <StudentBanner studentId={studentId} onClear={clearStudent} />
-      <Notice type={notice.type} message={notice.message} />
+  if (loading) {
+    return (
+      <PageShell title="Loading Profile..." subtitle="Retrieving your personalized settings.">
+        <div className="flex justify-center items-center py-24">
+          <LoadingSpinner />
+        </div>
+      </PageShell>
+    );
+  }
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
-        
-        {/* Left Column: Context Load & Info */}
-        <div className="space-y-6">
-          <section className="bg-white border border-brand-border rounded-2xl p-6 shadow-soft space-y-4">
-            <div className="flex items-center gap-2">
-              <UserCheck className="w-5 h-5 text-brand-primary" />
-              <h3 className="text-base font-bold text-brand-textPrimary font-heading">Load Student Session</h3>
+  return (
+    <PageShell title="My Profile" subtitle="Manage your skills, learning style parameters, and Socratic preferences.">
+      {notice.message && (
+        <div className="mb-6">
+          <Notice type={notice.type} message={notice.message} />
+        </div>
+      )}
+
+      {error ? (
+        <div className="bg-white border border-red-100 rounded-2xl p-8 text-center max-w-lg mx-auto shadow-sm">
+          <Notice type="error" message={error} />
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
+          
+          {/* User Info card */}
+          <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-sm space-y-6">
+            <div className="flex flex-col items-center text-center">
+              <div className="w-20 h-20 rounded-full bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold text-3xl shadow-xs border border-emerald-100 mb-4">
+                {user?.name ? user.name[0].toUpperCase() : "U"}
+              </div>
+              <h3 className="text-lg font-bold text-slate-800">{user?.name}</h3>
+              <p className="text-xs text-slate-400 mt-0.5">Socrates Learner ID: #{user?.id}</p>
+              
+              <div className="flex items-center gap-1.5 text-xs text-slate-500 bg-slate-50 px-3 py-1.5 rounded-full mt-3 font-medium">
+                <Mail className="w-3.5 h-3.5 text-slate-400" />
+                <span>{user?.email}</span>
+              </div>
             </div>
-            <p className="text-xs text-brand-textSecondary leading-relaxed">
-              If you have already created a student profile in the database, input your student ID below to restore parameters.
-            </p>
-            <div className="flex gap-2">
-              <input
-                value={manualId}
-                onChange={(event) => setManualId(event.target.value)}
-                placeholder="Enter student ID"
-                type="number"
-                min="1"
-                className="max-w-[150px]"
-              />
-              <button type="button" className="btn-secondary py-2 px-4" onClick={loadManualStudent}>
-                Load
+
+            <div className="border-t border-slate-50 pt-4 flex flex-col gap-2">
+              <button
+                onClick={() => setEditMode(true)}
+                className="w-full flex items-center justify-center gap-2 py-2 px-4 border border-slate-200 rounded-lg text-sm font-semibold text-slate-700 hover:bg-slate-50 transition-all cursor-pointer"
+              >
+                <Edit3 className="w-4 h-4 text-slate-500" />
+                <span>Edit Profile</span>
               </button>
             </div>
-          </section>
+          </div>
 
-          <section className="bg-white border border-brand-border rounded-2xl p-6 shadow-soft space-y-4">
-            <div className="flex items-center gap-2">
-              <Target className="w-5 h-5 text-brand-secondary" />
-              <h3 className="text-base font-bold text-brand-textPrimary font-heading">Adaptive Metrics</h3>
+          {/* Profile preferences card */}
+          <div className="lg:col-span-2 space-y-6">
+            <div className="bg-white border border-slate-100 rounded-2xl p-6 shadow-sm space-y-6">
+              
+              <div className="flex justify-between items-center pb-4 border-b border-slate-50">
+                <h4 className="text-base font-bold text-slate-800">Learning Parameters</h4>
+                <span className="text-xs font-semibold uppercase tracking-wider text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded-md">
+                  Active
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                
+                {/* Confidence */}
+                <div className="space-y-1.5">
+                  <span className="flex items-center gap-1.5 text-xs font-bold text-slate-400 uppercase tracking-wider">
+                    <Sliders className="w-4 h-4" />
+                    Confidence Metric
+                  </span>
+                  <div className="text-sm font-semibold text-slate-800">
+                    {Math.round((profile?.confidence_level ?? 0.5) * 100)}%
+                  </div>
+                  <div className="w-full bg-slate-100 rounded-full h-1.5 mt-2">
+                    <div
+                      className="bg-emerald-500 h-1.5 rounded-full transition-all duration-500"
+                      style={{ width: `${(profile?.confidence_level ?? 0.5) * 100}%` }}
+                    />
+                  </div>
+                </div>
+
+                {/* Preferred Difficulty */}
+                <div className="space-y-1.5">
+                  <span className="flex items-center gap-1.5 text-xs font-bold text-slate-400 uppercase tracking-wider">
+                    <Target className="w-4 h-4" />
+                    Preferred Difficulty
+                  </span>
+                  <div className="text-sm font-semibold text-slate-800 capitalize">
+                    {profile?.preferred_difficulty || "medium"}
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Skills */}
+              <div className="space-y-2.5">
+                <span className="flex items-center gap-1.5 text-xs font-bold text-slate-400 uppercase tracking-wider">
+                  <Award className="w-4 h-4" />
+                  Target Skills
+                </span>
+                <div className="flex flex-wrap gap-2">
+                  {profile?.skills && profile.skills.length > 0 ? (
+                    profile.skills.map((skill, index) => (
+                      <span
+                        key={index}
+                        className="text-xs font-semibold text-emerald-600 bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-100/50"
+                      >
+                        {skill}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-xs text-slate-400 italic">No skills listed yet.</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Interests */}
+              <div className="space-y-2.5">
+                <span className="flex items-center gap-1.5 text-xs font-bold text-slate-400 uppercase tracking-wider">
+                  <BookOpen className="w-4 h-4" />
+                  Learning Interests
+                </span>
+                <div className="flex flex-wrap gap-2">
+                  {profile?.interests && profile.interests.length > 0 ? (
+                    profile.interests.map((interest, index) => (
+                      <span
+                        key={index}
+                        className="text-xs font-semibold text-slate-600 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-100"
+                      >
+                        {interest}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="text-xs text-slate-400 italic">No interests listed yet.</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Goals */}
+              <div className="space-y-1.5">
+                <span className="block text-xs font-bold text-slate-400 uppercase tracking-wider">
+                  Short & Long Term Goals
+                </span>
+                <div className="text-sm text-slate-600 bg-slate-50 p-4 rounded-xl border border-slate-100/50 leading-relaxed whitespace-pre-wrap">
+                  {profile?.goals || "No learning goals defined yet."}
+                </div>
+              </div>
+
             </div>
-            <ul className="text-xs text-brand-textSecondary space-y-3 leading-relaxed">
-              <li className="flex items-start gap-2">
-                <span className="h-1.5 w-1.5 rounded-full bg-brand-primary mt-1.5"></span>
-                <span><strong>Skills:</strong> Mapped to target weaknesses during quizzes.</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="h-1.5 w-1.5 rounded-full bg-brand-primary mt-1.5"></span>
-                <span><strong>Confidence:</strong> Influences Socratic prompt complexity metrics.</span>
-              </li>
-              <li className="flex items-start gap-2">
-                <span className="h-1.5 w-1.5 rounded-full bg-brand-primary mt-1.5"></span>
-                <span><strong>Difficulty:</strong> Determines the standard complexity weights of replies.</span>
-              </li>
-            </ul>
-          </section>
+          </div>
+
         </div>
+      )}
 
-        {/* Right Columns: Main Form */}
-        <form className="bg-white border border-brand-border rounded-2xl p-6 shadow-soft space-y-6 lg:col-span-2" onSubmit={handleSubmit}>
-          <div className="pb-3 border-b border-brand-border/40">
-            <h3 className="text-base font-bold text-brand-textPrimary font-heading">
-              {studentId ? "Update Profile Information" : "Create New Student Profile"}
-            </h3>
-            <p className="text-xs text-brand-textSecondary mt-0.5">
-              Fill out your details to synchronize AI weights.
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <label className="flex flex-col gap-1.5 text-xs font-semibold text-brand-textSecondary">
-              Full Name
-              <input
-                name="name"
-                value={form.name}
-                onChange={handleChange}
-                placeholder="Student name"
-                required
-                disabled={Boolean(studentId)}
-                className="disabled:bg-slate-50 disabled:text-brand-textMuted disabled:cursor-not-allowed"
-              />
-            </label>
-
-            <label className="flex flex-col gap-1.5 text-xs font-semibold text-brand-textSecondary">
-              Email Address
-              <input
-                name="email"
-                type="email"
-                value={form.email}
-                onChange={handleChange}
-                placeholder="student@example.com"
-                required
-                disabled={Boolean(studentId)}
-                className="disabled:bg-slate-50 disabled:text-brand-textMuted disabled:cursor-not-allowed"
-              />
-            </label>
-
-            <label className="flex flex-col gap-1.5 text-xs font-semibold text-brand-textSecondary">
-              Skills (comma separated)
-              <input
-                name="skills"
-                value={form.skills}
-                onChange={handleChange}
-                placeholder="Python, SQL, Statistics"
-              />
-            </label>
-
-            <label className="flex flex-col gap-1.5 text-xs font-semibold text-brand-textSecondary">
-              Interests (comma separated)
-              <input
-                name="interests"
-                value={form.interests}
-                onChange={handleChange}
-                placeholder="NLP, Vision, Data Engineering"
-              />
-            </label>
-
-            <label className="flex flex-col gap-1.5 text-xs font-semibold text-brand-textSecondary md:col-span-2">
-              Goals
-              <textarea
-                name="goals"
-                value={form.goals}
-                onChange={handleChange}
-                rows="3"
-                placeholder="Describe your learning goals (e.g. Master statistics for AI engineering)"
-              />
-            </label>
-
-            {/* Slider */}
-            <div className="flex flex-col gap-2">
-              <span className="text-xs font-semibold text-brand-textSecondary">
-                Confidence Level: <strong className="text-brand-primary text-sm">{Number(form.confidence_level).toFixed(2)}</strong>
-              </span>
-              <input
-                type="range"
-                name="confidence_level"
-                min="0"
-                max="1"
-                step="0.05"
-                value={form.confidence_level}
-                onChange={handleChange}
-                className="h-1.5 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-brand-primary border-none p-0"
-              />
-              <span className="text-[10px] text-brand-textMuted">0.0 (Unconfident) to 1.0 (Confident)</span>
+      {/* Edit Profile Modal */}
+      {editMode && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-xs">
+          <div className="bg-white border border-slate-100 max-w-lg w-full rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+            
+            {/* Modal header */}
+            <div className="flex items-center justify-between p-5 border-b border-slate-50">
+              <h3 className="text-base font-bold text-slate-800">Edit Profile</h3>
+              <button
+                onClick={() => setEditMode(false)}
+                className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-50 transition-all"
+              >
+                <X className="w-5 h-5" />
+              </button>
             </div>
 
-            {/* Select Dropdown */}
-            <label className="flex flex-col gap-1.5 text-xs font-semibold text-brand-textSecondary">
-              Preferred Difficulty
-              <select name="preferred_difficulty" value={form.preferred_difficulty} onChange={handleChange}>
-                <option value="easy">Easy</option>
-                <option value="medium">Medium</option>
-                <option value="hard">Hard</option>
-              </select>
-            </label>
-          </div>
+            {/* Modal body */}
+            <form onSubmit={handleUpdate} className="p-6 space-y-4">
+              
+              {/* Skills */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Skills (comma separated)
+                </label>
+                <input
+                  type="text"
+                  value={skills}
+                  onChange={(e) => setSkills(e.target.value)}
+                  className="block w-full px-3 py-2 border border-slate-200 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                  placeholder="Python, ML, React"
+                />
+              </div>
 
-          <div className="pt-4 border-t border-brand-border/40 flex justify-end">
-            <button type="submit" className="btn-primary px-6" disabled={saving || loading}>
-              {saving ? "Saving..." : studentId ? "Update Profile" : "Create Profile"}
-            </button>
-          </div>
-        </form>
+              {/* Interests */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Interests (comma separated)
+                </label>
+                <input
+                  type="text"
+                  value={interests}
+                  onChange={(e) => setInterests(e.target.value)}
+                  className="block w-full px-3 py-2 border border-slate-200 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                  placeholder="Data Engineering, Backend, UI/UX"
+                />
+              </div>
 
-      </div>
+              {/* Goals */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Goals
+                </label>
+                <textarea
+                  value={goals}
+                  onChange={(e) => setGoals(e.target.value)}
+                  rows={3}
+                  className="block w-full px-3 py-2 border border-slate-200 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                  placeholder="Master full stack development..."
+                />
+              </div>
+
+              {/* Confidence */}
+              <div>
+                <div className="flex justify-between items-center mb-1">
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                    Confidence Level
+                  </label>
+                  <span className="text-xs font-bold text-emerald-600">
+                    {Math.round(confidence * 100)}%
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0.0"
+                  max="1.0"
+                  step="0.05"
+                  value={confidence}
+                  onChange={(e) => setConfidence(parseFloat(e.target.value))}
+                  className="w-full h-1 bg-slate-100 rounded-lg appearance-none cursor-pointer accent-emerald-600 focus:outline-none"
+                />
+              </div>
+
+              {/* Difficulty */}
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Preferred Difficulty
+                </label>
+                <select
+                  value={difficulty}
+                  onChange={(e) => setDifficulty(e.target.value)}
+                  className="block w-full px-3 py-2 border border-slate-200 rounded-lg text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all"
+                >
+                  <option value="easy">Easy</option>
+                  <option value="medium">Medium</option>
+                  <option value="hard">Hard</option>
+                </select>
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center gap-3 pt-4 border-t border-slate-50 justify-end">
+                <button
+                  type="button"
+                  onClick={() => setEditMode(false)}
+                  className="py-2 px-4 border border-slate-200 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-all cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={saving}
+                  className="py-2 px-5 border border-transparent text-xs font-bold rounded-lg text-white bg-emerald-600 hover:bg-emerald-700 focus:outline-none disabled:opacity-50 transition-all cursor-pointer shadow-xs"
+                >
+                  {saving ? "Saving..." : "Save Changes"}
+                </button>
+              </div>
+
+            </form>
+
+          </div>
+        </div>
+      )}
     </PageShell>
   );
 }

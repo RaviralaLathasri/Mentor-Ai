@@ -7,14 +7,14 @@ from typing import Dict, List
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.database import Feedback, MentorResponse, Student, WeaknessScore, get_db
+from app.database import Feedback, MentorResponse, User, WeaknessScore, get_db
 from app.services import AdaptiveLearningService
 
 router = APIRouter(prefix="/api/analytics", tags=["Analytics"])
 
 
 def _ensure_student_exists(db: Session, student_id: int) -> None:
-    student = db.query(Student).filter(Student.id == student_id).first()
+    student = db.query(User).filter(User.id == student_id).first()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 

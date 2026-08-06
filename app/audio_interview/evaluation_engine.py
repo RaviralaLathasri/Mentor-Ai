@@ -19,11 +19,19 @@ class EvaluationEngine:
 
     @staticmethod
     def _llm_enabled() -> bool:
-        return bool(os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY"))
+        return bool(
+            os.getenv("OPENAI_API_KEY") or
+            os.getenv("OPENROUTER_API_KEY") or
+            os.getenv("GEMINI_API_KEY")
+        )
 
     @staticmethod
     def _model_name() -> str:
-        return os.getenv("OPENAI_API_MODEL", "openrouter/auto")
+        if os.getenv("OPENAI_API_MODEL"):
+            return os.getenv("OPENAI_API_MODEL")
+        if os.getenv("GEMINI_API_KEY"):
+            return "gemini-2.5-flash"
+        return "openrouter/auto"
 
     def evaluate(
         self,

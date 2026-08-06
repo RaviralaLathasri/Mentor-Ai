@@ -66,46 +66,50 @@ class FeedbackType(str, PyEnum):
     HELPFUL = "helpful"
 
 
-# ── Model 1: Student ──────────────────────────────────────────────────────────
+# ── Model 1: User ──────────────────────────────────────────────────────────
 
-class Student(Base):
+class User(Base):
     """
-    Core student record.
+    Core user record.
     
-    Represents a student user in the system. Primary entity for all
+    Represents a user in the system. Primary entity for all
     learning data, profiles, and interactions.
     """
-    __tablename__ = "students"
+    __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, unique=True, nullable=False, index=True)
     name = Column(String, nullable=False)
+    password_hash = Column(String, nullable=True)  # Nullable for Google Auth users
+    google_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     is_active = Column(Boolean, default=True)
 
     # Relationships
-    profile = relationship("StudentProfile", back_populates="student", uselist=False)
+    profile = relationship("Profile", back_populates="user", uselist=False)
     weakness_scores = relationship("WeaknessScore", back_populates="student")
     feedbacks = relationship("Feedback", back_populates="student")
     mentor_responses = relationship("MentorResponse", back_populates="student")
     adaptive_sessions = relationship("AdaptiveSession", back_populates="student")
     mock_interviews = relationship("MockInterviewSession", back_populates="student")
+    pomodoro_sessions = relationship("PomodoroSession", back_populates="student")
+    active_recall_cards = relationship("ActiveRecallCard", back_populates="student")
 
 
-# ── Model 2: StudentProfile ───────────────────────────────────────────────────
+# ── Model 2: Profile ───────────────────────────────────────────────────
 
-class StudentProfile(Base):
+class Profile(Base):
     """
     Extended student profile with learning preferences and metadata.
     
-    One-to-one relationship with Student.
+    One-to-one relationship with User.
     Stores learning preferences, goals, and confidence metrics.
     """
-    __tablename__ = "student_profiles"
+    __tablename__ = "profiles"
 
     id = Column(Integer, primary_key=True, index=True)
-    student_id = Column(Integer, ForeignKey("students.id"), unique=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), unique=True, nullable=False)
     
     # Learning profile
     skills = Column(JSON, default=list)  # e.g., ["Python", "Statistics"]
@@ -113,8 +117,8 @@ class StudentProfile(Base):
     goals = Column(Text, default="")  # Free-text learning goals
     
     # Learning preferences
-    confidence_level = Column(Float, default=0.5)  # 0.0 (low) to 1.0 (high)
-    preferred_difficulty = Column(
+    confidence = Column(Float, default=0.5)  # 0.0 (low) to 1.0 (high)
+    difficulty = Column(
         Enum(DifficultyLevel),
         default=DifficultyLevel.MEDIUM
     )
@@ -124,14 +128,38 @@ class StudentProfile(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
     # Relationship
-    student = relationship("Student", back_populates="profile")
+    user = relationship("User", back_populates="profile")
+
+    @property
+    def student_id(self):
+        return self.user_id
+
+    @student_id.setter
+    def student_id(self, value):
+        self.user_id = value
+
+    @property
+    def confidence_level(self):
+        return self.confidence
+
+    @confidence_level.setter
+    def confidence_level(self, value):
+        self.confidence = value
+
+    @property
+    def preferred_difficulty(self):
+        return self.difficulty
+
+    @preferred_difficulty.setter
+    def preferred_difficulty(self, value):
+        self.difficulty = value
 
     @hybrid_property
     def learning_style_summary(self):
         """Generate a summary of learner profile for LLM context."""
         return {
-            "confidence": self.confidence_level,
-            "preferred_difficulty": self.preferred_difficulty.value,
+            "confidence": self.confidence,
+            "preferred_difficulty": self.difficulty.value if isinstance(self.difficulty, DifficultyLevel) else self.difficulty,
             "skills": self.skills,
             "interests": self.interests
         }
@@ -155,12 +183,12 @@ class WeaknessScore(Base):
     __tablename__ = "weakness_scores"
 
     id = Column(Integer, primary_key=True, index=True)
-    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     concept_name = Column(String, nullable=False)  # e.g., "backpropagation"
     weakness_score = Column(Float, default=0.0)  # Range: 0 (strong) to 1 (weak)
     
     # Metadata
-    times_seen = Column(Integer, default=0)  # How many times student encountered concept
+    times_seen = Column(Integer, default=0)  # How many times user encountered concept
     times_correct = Column(Integer, default=0)  # How many correct attempts
     last_updated = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
@@ -170,7 +198,7 @@ class WeaknessScore(Base):
     )
 
     # Relationship
-    student = relationship("Student", back_populates="weakness_scores")
+    student = relationship("User", back_populates="weakness_scores")
 
     def update_from_quiz_result(self, is_correct: bool):
         """
@@ -194,15 +222,15 @@ class WeaknessScore(Base):
 
 class Feedback(Base):
     """
-    Human-in-the-loop feedback from student about AI mentor responses.
+    Human-in-the-loop feedback from user about AI mentor responses.
     
-    Captures student reactions to AI responses and drives the adaptive loop.
+    Captures user reactions to AI responses and drives the adaptive loop.
     Used to adjust difficulty and personalize future responses.
     """
     __tablename__ = "feedbacks"
 
     id = Column(Integer, primary_key=True, index=True)
-    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     response_id = Column(String, nullable=False)  # UUID of the AI response being rated
     
     feedback_type = Column(
@@ -211,7 +239,7 @@ class Feedback(Base):
     )
     
     # Optional context
-    comments = Column(Text, nullable=True)  # Student's written feedback
+    comments = Column(Text, nullable=True)  # User's written feedback
     rating = Column(Float, nullable=True)  # 1-5 satisfaction score
     focus_concept = Column(String, nullable=True)  # What concept was being discussed
     
@@ -219,7 +247,7 @@ class Feedback(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
     # Relationship
-    student = relationship("Student", back_populates="feedbacks")
+    student = relationship("User", back_populates="feedbacks")
 
 
 # ── Model 5: MentorResponse ───────────────────────────────────────────────────
@@ -229,7 +257,7 @@ class MentorResponse(Base):
     Stores AI mentor responses for auditing and learning loop.
     
     Each response from the mentor is logged with:
-    - Student context at time of response
+    - User context at time of response
     - The response content
     - Difficulty level used
     - Explanation style applied
@@ -238,14 +266,14 @@ class MentorResponse(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     response_id = Column(String, unique=True, nullable=False)  # UUID
-    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     
-    # Student context at time of response
+    # User context at time of response
     student_weakness_state = Column(JSON, default=dict)  # Weakness scores snapshot
     student_confidence = Column(Float, nullable=False)
     
     # Response content and style
-    query = Column(Text, nullable=False)  # The student's question/query
+    query = Column(Text, nullable=False)  # The user's question/query
     response = Column(Text, nullable=False)  # The AI's response
     explanation_style = Column(String)  # "simple" | "conceptual" | "deep"
     target_concept = Column(String)  # Concept the response targets
@@ -254,7 +282,7 @@ class MentorResponse(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
 
     # Relationship
-    student = relationship("Student", back_populates="mentor_responses")
+    student = relationship("User", back_populates="mentor_responses")
 
 
 # ── Model 6: AdaptiveSession ─────────────────────────────────────────────────
@@ -264,12 +292,12 @@ class AdaptiveSession(Base):
     Tracks an adaptive learning session.
     
     A session is a collection of interactions (queries, responses, feedback)
-    with a single student. Used to maintain context and track adaptation.
+    with a single user. Used to maintain context and track adaptation.
     """
     __tablename__ = "adaptive_sessions"
 
     id = Column(Integer, primary_key=True, index=True)
-    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     
     # Session context
     topic = Column(String, default="general")  # What topic is this session about?
@@ -281,10 +309,10 @@ class AdaptiveSession(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     # Session snapshot for audit trail
-    context_snapshot = Column(JSON, default=dict)  # Student state at session start
+    context_snapshot = Column(JSON, default=dict)  # User state at session start
 
     # Relationship
-    student = relationship("Student", back_populates="adaptive_sessions")
+    student = relationship("User", back_populates="adaptive_sessions")
 
 
 # ── Database Initialization ───────────────────────────────────────────────────
@@ -316,7 +344,7 @@ class MockInterviewSession(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(String, unique=True, nullable=False, index=True)
-    student_id = Column(Integer, ForeignKey("students.id"), nullable=False, index=True)
+    student_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     role = Column(String, nullable=False, index=True)
     duration = Column(String, nullable=True)
     level = Column(String, nullable=False)
@@ -330,7 +358,51 @@ class MockInterviewSession(Base):
     created_at = Column(DateTime, default=datetime.utcnow, index=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    student = relationship("Student", back_populates="mock_interviews")
+    student = relationship("User", back_populates="mock_interviews")
+
+
+# ── Model 8: PomodoroSession ───────────────────────────────────────────
+
+class PomodoroSession(Base):
+    """
+    Logs Pomodoro focus blocks and breaks.
+    """
+    __tablename__ = "pomodoro_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    focus_concept = Column(String, nullable=True)
+    completed = Column(Boolean, default=False)
+    summary = Column(Text, default="")
+    mentor_feedback = Column(Text, default="")
+    created_at = Column(DateTime, default=datetime.utcnow, index=True)
+
+    student = relationship("User", back_populates="pomodoro_sessions")
+
+
+# ── Model 9: ActiveRecallCard ──────────────────────────────────────────
+
+class ActiveRecallCard(Base):
+    """
+    Spaced repetition active recall cards.
+    """
+    __tablename__ = "active_recall_cards"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    concept = Column(String, nullable=False)
+    question = Column(Text, nullable=False)
+    ideal_answer = Column(Text, nullable=False)
+    
+    # SM-2 Spaced Repetition parameters
+    last_reviewed = Column(DateTime, nullable=True)
+    next_review = Column(DateTime, default=datetime.utcnow, index=True)
+    interval_days = Column(Integer, default=1)
+    ease_factor = Column(Float, default=2.5)
+    repetitions = Column(Integer, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    student = relationship("User", back_populates="active_recall_cards")
 
 
 def init_db():

@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse
 
 from app.database import init_db
 from app.routes import (
+    auth,
     adaptive,
     analytics,
     audio_interview,
@@ -20,6 +21,7 @@ from app.routes import (
     profiles,
     resume,
     wellness,
+    focus,
 )
 
 app = FastAPI(
@@ -42,6 +44,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router)
 app.include_router(profiles.router)
 app.include_router(wellness.router)
 app.include_router(mentor_ai.router)
@@ -53,6 +56,7 @@ app.include_router(resume.router)
 app.include_router(career.router)
 app.include_router(interview.router)
 app.include_router(audio_interview.router)
+app.include_router(focus.router)
 
 
 @app.on_event("startup")

@@ -14,7 +14,7 @@ from typing import Dict, List, Optional
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
-from app.database import MockInterviewSession, Student
+from app.database import MockInterviewSession, User
 from app.schemas import (
     CareerLevelEnum,
     InterviewTypeEnum,
@@ -135,11 +135,19 @@ class MockInterviewService:
 
     @staticmethod
     def _get_model_name() -> str:
-        return os.getenv("OPENAI_API_MODEL", "openrouter/auto")
+        if os.getenv("OPENAI_API_MODEL"):
+            return os.getenv("OPENAI_API_MODEL")
+        if os.getenv("GEMINI_API_KEY"):
+            return "gemini-2.5-flash"
+        return "openrouter/auto"
 
     @staticmethod
     def _llm_enabled() -> bool:
-        return bool((os.getenv("OPENAI_API_KEY") or "").strip())
+        return bool(
+            (os.getenv("OPENAI_API_KEY") or "").strip() or
+            (os.getenv("GEMINI_API_KEY") or "").strip() or
+            (os.getenv("OPENROUTER_API_KEY") or "").strip()
+        )
 
     @staticmethod
     def _allocate_question_types(question_count: int, interview_type: InterviewTypeEnum) -> List[InterviewTypeEnum]:
@@ -481,9 +489,9 @@ class MockInterviewService:
         }
 
     def run_mock_interview(self, request: MockInterviewRequest) -> Dict:
-        student = self.db.query(Student).filter(Student.id == request.student_id).first()
+        student = self.db.query(User).filter(User.id == request.student_id).first()
         if not student:
-            raise ValueError(f"Student {request.student_id} not found")
+            raise ValueError(f"User {request.student_id} not found")
 
         llm_questions = self._generate_questions_with_llm(
             role=request.role,
@@ -568,9 +576,9 @@ class MockInterviewService:
         return self._build_response_payload(entity)
 
     def get_student_mock_interviews(self, student_id: int, limit: int = 20) -> Dict:
-        student = self.db.query(Student).filter(Student.id == student_id).first()
+        student = self.db.query(User).filter(User.id == student_id).first()
         if not student:
-            raise ValueError(f"Student {student_id} not found")
+            raise ValueError(f"User {student_id} not found")
 
         rows = (
             self.db.query(MockInterviewSession)

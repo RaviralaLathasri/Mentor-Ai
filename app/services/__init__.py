@@ -25,8 +25,8 @@ from app.database import (
     Feedback,
     FeedbackType,
     MentorResponse,
-    Student,
-    StudentProfile,
+    User,
+    Profile,
     WeaknessScore,
 )
 from app.schemas import (
@@ -79,33 +79,33 @@ class StudentProfileService:
         goals: str = "",
         confidence_level: float = 0.5,
         preferred_difficulty: object = DifficultyLevel.MEDIUM,
-    ) -> StudentProfile:
-        student = self.db.query(Student).filter(Student.id == student_id).first()
+    ) -> Profile:
+        student = self.db.query(User).filter(User.id == student_id).first()
         if not student:
-            raise ValueError(f"Student {student_id} not found")
+            raise ValueError(f"User {student_id} not found")
 
         existing = self.get_profile(student_id)
         if existing:
-            raise ValueError(f"Profile already exists for student {student_id}")
+            raise ValueError(f"Profile already exists for user {student_id}")
 
         if not (0.0 <= confidence_level <= 1.0):
             raise ValueError("Confidence must be between 0.0 and 1.0")
 
-        profile = StudentProfile(
-            student_id=student_id,
+        profile = Profile(
+            user_id=student_id,
             skills=skills or [],
             interests=interests or [],
             goals=goals or "",
-            confidence_level=confidence_level,
-            preferred_difficulty=_coerce_difficulty(preferred_difficulty),
+            confidence=confidence_level,
+            difficulty=_coerce_difficulty(preferred_difficulty),
         )
         self.db.add(profile)
         self.db.commit()
         self.db.refresh(profile)
         return profile
 
-    def get_profile(self, student_id: int) -> Optional[StudentProfile]:
-        return self.db.query(StudentProfile).filter(StudentProfile.student_id == student_id).first()
+    def get_profile(self, student_id: int) -> Optional[Profile]:
+        return self.db.query(Profile).filter(Profile.user_id == student_id).first()
 
     def update_profile(
         self,
@@ -115,10 +115,10 @@ class StudentProfileService:
         goals: Optional[str] = None,
         confidence_level: Optional[float] = None,
         preferred_difficulty: Optional[object] = None,
-    ) -> StudentProfile:
+    ) -> Profile:
         profile = self.get_profile(student_id)
         if not profile:
-            raise ValueError(f"Profile not found for student {student_id}")
+            raise ValueError(f"Profile not found for user {student_id}")
 
         if skills is not None:
             profile.skills = skills
@@ -129,9 +129,9 @@ class StudentProfileService:
         if confidence_level is not None:
             if not (0.0 <= confidence_level <= 1.0):
                 raise ValueError("Confidence must be between 0.0 and 1.0")
-            profile.confidence_level = confidence_level
+            profile.confidence = confidence_level
         if preferred_difficulty is not None:
-            profile.preferred_difficulty = _coerce_difficulty(preferred_difficulty)
+            profile.difficulty = _coerce_difficulty(preferred_difficulty)
 
         profile.updated_at = datetime.utcnow()
         self.db.commit()
@@ -309,9 +309,9 @@ class WeaknessAnalyzerService:
         return random.choice(list(bank.keys()))
 
     def generate_quiz_question(self, student_id: int, concept_name: Optional[str] = None) -> Dict:
-        student_exists = self.db.query(Student).filter(Student.id == student_id).first()
+        student_exists = self.db.query(User).filter(User.id == student_id).first()
         if not student_exists:
-            raise ValueError(f"Student {student_id} not found")
+            raise ValueError(f"User {student_id} not found")
 
         concept_key = self._pick_quiz_concept(student_id=student_id, concept_name=concept_name)
         bank_items = self._QUIZ_QUESTION_BANK.get(concept_key, self._QUIZ_QUESTION_BANK["machine learning"])
@@ -491,9 +491,9 @@ class WeaknessAnalyzerService:
         student_answer: str = "",
         correct_answer: str = "",
     ) -> WeaknessAnalysisResult:
-        student_exists = self.db.query(Student).filter(Student.id == student_id).first()
+        student_exists = self.db.query(User).filter(User.id == student_id).first()
         if not student_exists:
-            raise ValueError(f"Student {student_id} not found")
+            raise ValueError(f"User {student_id} not found")
 
         weakness = self.get_or_create_weakness(student_id, concept_name)
         old_score = weakness.weakness_score
@@ -504,6 +504,26 @@ class WeaknessAnalyzerService:
         misconception = None
         if not is_correct:
             misconception = self._detect_misconception(student_answer, correct_answer, concept_name)
+            
+            # Auto-create active recall card on mistake
+            try:
+                from app.database import ActiveRecallCard
+                exists = self.db.query(ActiveRecallCard).filter(
+                    ActiveRecallCard.user_id == student_id,
+                    ActiveRecallCard.concept == concept_name
+                ).first()
+                if not exists:
+                    card = ActiveRecallCard(
+                        user_id=student_id,
+                        concept=concept_name,
+                        question=f"Explain the core concept and common pitfalls of '{concept_name}'. Make sure to touch upon what it solves.",
+                        ideal_answer=correct_answer or f"Reference explanation for '{concept_name}'.",
+                        next_review=datetime.utcnow()
+                    )
+                    self.db.add(card)
+                    self.db.commit()
+            except Exception as e:
+                logger.error(f"Failed to auto-create ActiveRecallCard on mistake: {e}")
 
         return WeaknessAnalysisResult(
             concept_name=weakness.concept_name,
@@ -567,9 +587,9 @@ class WeaknessAnalyzerService:
         correct_answer: str,
         question: Optional[str] = None,
     ) -> MistakeExplanation:
-        student_exists = self.db.query(Student).filter(Student.id == student_id).first()
+        student_exists = self.db.query(User).filter(User.id == student_id).first()
         if not student_exists:
-            raise ValueError(f"Student {student_id} not found")
+            raise ValueError(f"User {student_id} not found")
 
         concept_key = self._normalize_concept(concept)
         misconception = self._detect_misconception(student_answer, correct_answer, concept_key) or f"Gap in {concept_key}."
@@ -1666,6 +1686,8 @@ class MentorAIService:
         base_url = (os.getenv("OPENAI_API_BASE") or "").lower()
         if "openrouter" in base_url:
             return "openrouter/auto"
+        if os.getenv("GEMINI_API_KEY"):
+            return "gemini-2.5-flash"
         return "gpt-4o-mini"
 
     def _model_candidates(self) -> List[str]:
@@ -1679,6 +1701,16 @@ class MentorAIService:
                 "openai/gpt-4o-mini",
                 "anthropic/claude-3.5-haiku",
                 "meta-llama/llama-3.1-8b-instruct:free",
+            ]
+            for model in fallback_models:
+                if model not in candidates:
+                    candidates.append(model)
+        elif os.getenv("GEMINI_API_KEY"):
+            fallback_models = [
+                "gemini-2.5-flash",
+                "gemini-1.5-flash",
+                "gemini-2.5-pro",
+                "gemini-1.5-pro",
             ]
             for model in fallback_models:
                 if model not in candidates:
@@ -1716,8 +1748,8 @@ class MentorAIService:
         latest_response: Optional[MentorResponse] = None,
         is_follow_up_turn: bool = False,
     ) -> Optional[str]:
-        api_key = os.getenv("OPENAI_API_KEY")
-        api_base = os.getenv("OPENAI_API_BASE")
+        api_key = os.getenv("OPENAI_API_KEY") or os.getenv("GEMINI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+        api_base = os.getenv("OPENAI_API_BASE") or os.getenv("GEMINI_API_BASE") or os.getenv("OPENROUTER_BASE_URL")
         if not api_key:
             return None
         if time.time() < MentorAIService._llm_backoff_until:
@@ -2613,7 +2645,7 @@ class AdaptiveLearningService:
         }
 
     @staticmethod
-    def _fallback_plan_concepts(profile: StudentProfile) -> List[str]:
+    def _fallback_plan_concepts(profile: Profile) -> List[str]:
         candidates: List[str] = []
         for item in (profile.skills or []) + (profile.interests or []):
             value = str(item).strip().lower()

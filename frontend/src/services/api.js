@@ -29,6 +29,18 @@ const api = axios.create({
   },
 });
 
+// Interceptor to attach the JWT bearer token
+api.interceptors.request.use(
+  (config) => {
+    const token = localStorage.getItem("mentor_access_token");
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`;
+    }
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
 function parseError(error) {
   if (error?.code === "ERR_NETWORK" || error?.message === "Network Error") {
     const base = API_BASE_URL || "(same origin)";
@@ -53,12 +65,23 @@ async function request(promise) {
   }
 }
 
+export const authApi = {
+  register: (payload) => request(api.post("/api/auth/register", payload)),
+  login: (payload) => request(api.post("/api/auth/login", payload)),
+  google: (payload) => request(api.post("/api/auth/google", payload)),
+  getMe: () => request(api.get("/api/auth/me")),
+};
+
 export const profileApi = {
   createStudent: (payload) => request(api.post("/api/profile/create", payload)),
   getStudent: (studentId) => request(api.get(`/api/profile/student/${studentId}`)),
   getProfile: (studentId) => request(api.get(`/api/profile/${studentId}`)),
   updateProfile: (studentId, payload) => request(api.put(`/api/profile/${studentId}`, payload)),
   upsertProfile: (studentId, payload) => request(api.post(`/api/profile/${studentId}/profile`, payload)),
+  
+  getProfileMe: () => request(api.get("/api/profile/me")),
+  upsertProfileMe: (payload) => request(api.post("/api/profile/me", payload)),
+  updateProfileMe: (payload) => request(api.put("/api/profile/me", payload)),
 };
 
 export const mentorApi = {
@@ -138,6 +161,14 @@ export const interviewApi = {
   getMockInterview: (sessionId) => request(api.get(`/api/interview/mock/${sessionId}`)),
   getMockInterviewHistory: (studentId, limit = 20) =>
     request(api.get(`/api/interview/mock/student/${studentId}`, { params: { limit } })),
+};
+
+export const focusApi = {
+  logFocusSession: (payload) => request(api.post("/api/focus/pomodoro", payload)),
+  getFocusStats: () => request(api.get("/api/focus/pomodoro/stats")),
+  getRecallCards: () => request(api.get("/api/focus/recall/cards")),
+  submitRecallReview: (cardId, payload) => request(api.post(`/api/focus/recall/cards/${cardId}/review`, payload)),
+  generateRecallCards: () => request(api.post("/api/focus/recall/cards/generate")),
 };
 
 export default api;
